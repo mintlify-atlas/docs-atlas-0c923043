@@ -1,0 +1,325 @@
+---
+title: Import Cookies
+description: Import cookies into a user session for authenticated browsing
+---
+
+Inject cookies into a user's browser session to enable authenticated browsing without interactive login. This endpoint accepts Playwright-format cookie objects and is **disabled by default** for security.
+
+## Endpoint
+
+```
+POST /sessions/:userId/cookies
+```
+
+## Authentication
+
+**This endpoint requires the `CAMOFOX_API_KEY` environment variable.**
+
+<ParamField header="Authorization" type="string" required>
+  Bearer token matching the `CAMOFOX_API_KEY` environment variable:
+  ```
+  Authorization: Bearer YOUR_CAMOFOX_API_KEY
+  ```
+</ParamField>
+
+If `CAMOFOX_API_KEY` is not set, all requests to this endpoint return `403 Forbidden`.
+
+## Path parameters
+
+<ParamField path="userId" type="string" required>
+  Unique user identifier. Cookies are scoped to this user's browser session. All tabs created with this `userId` will share these cookies.
+</ParamField>
+
+## Request body
+
+<ParamField body="cookies" type="object[]" required>
+  Array of Playwright-format cookie objects. Maximum 500 cookies per request.
+  
+  <Expandable title="Cookie object properties">
+    <ParamField body="name" type="string" required>
+      Cookie name
+    </ParamField>
+    
+    <ParamField body="value" type="string" required>
+      Cookie value
+    </ParamField>
+    
+    <ParamField body="domain" type="string" required>
+      Cookie domain (e.g., `.example.com`, `www.example.com`)
+    </ParamField>
+    
+    <ParamField body="path" type="string" default="/">
+      Cookie path
+    </ParamField>
+    
+    <ParamField body="expires" type="number" default="-1">
+      Unix timestamp (seconds since epoch) when cookie expires. `-1` for session cookies.
+    </ParamField>
+    
+    <ParamField body="httpOnly" type="boolean" default="false">
+      HTTP-only flag (cookie not accessible via JavaScript)
+    </ParamField>
+    
+    <ParamField body="secure" type="boolean" default="false">
+      Secure flag (cookie only sent over HTTPS)
+    </ParamField>
+    
+    <ParamField body="sameSite" type="string" default="Lax">
+      SameSite attribute: `"Strict"`, `"Lax"`, or `"None"`
+    </ParamField>
+  </Expandable>
+</ParamField>
+
+## Response
+
+<ResponseField name="ok" type="boolean">
+  `true` if cookies were imported successfully
+</ResponseField>
+
+<ResponseField name="userId" type="string">
+  User ID that received the cookies (normalized to string)
+</ResponseField>
+
+<ResponseField name="count" type="number">
+  Number of cookies imported
+</ResponseField>
+
+### Error response
+
+<ResponseField name="error" type="string">
+  Human-readable error message
+</ResponseField>
+
+<ResponseField name="invalid" type="object[]">
+  When cookie validation fails, this array contains details about invalid cookies:
+  
+  <Expandable title="Invalid cookie details">
+    <ResponseField name="index" type="number">
+      Array index of the invalid cookie
+    </ResponseField>
+    
+    <ResponseField name="error" type="string">
+      Validation error (e.g., `"cookie must be an object"`)
+    </ResponseField>
+    
+    <ResponseField name="missing" type="string[]">
+      List of required fields that are missing (e.g., `["name", "value", "domain"]`)
+    </ResponseField>
+  </Expandable>
+</ResponseField>
+
+## Security
+
+### Why authentication is required
+
+Cookie injection moves the browser from **anonymous browsing** to **authenticated browsing**. This endpoint:
+
+- Is **disabled by default** (returns 403 if `CAMOFOX_API_KEY` is not set)
+- Requires a secret Bearer token to prevent unauthorized cookie injection
+- Uses timing-safe comparison to prevent timing attacks on the API key
+
+### Setup
+
+**1. Generate a secret API key:**
+
+```bash
+openssl rand -hex 32
+```
+
+**2. Set the environment variable before starting the server:**
+
+```bash
+export CAMOFOX_API_KEY="your-generated-key-here"
+npm start
+```
+
+**3. Send the key in the Authorization header:**
+
+```bash
+curl -X POST http://localhost:9377/sessions/agent1/cookies \
+  -H 'Content-Type: application/json' \
+  -H 'Authorization: Bearer your-generated-key-here' \
+  -d '{"cookies": [...]}'  
+```
+
+## Validation and sanitization
+
+### Required fields
+
+Each cookie object **must** include:
+- `name` (non-empty string)
+- `value` (string)
+- `domain` (non-empty string)
+
+Requests with invalid cookies return `400 Bad Request` with details in the `invalid` array.
+
+### Field allowlist
+
+Only these Playwright cookie fields are accepted:
+- `name`, `value`, `domain`, `path`, `expires`, `httpOnly`, `secure`, `sameSite`
+
+All other fields are stripped during sanitization.
+
+### Limits
+
+- **Maximum 500 cookies per request** - returns `400` if exceeded
+- **Maximum 512KB request body** - enforced by Express
+- No domain filtering - cookies are injected as-is (ensure your cookie domain matches the sites you'll browse)
+
+## Examples
+
+### Basic cookie import
+
+```bash
+curl -X POST http://localhost:9377/sessions/agent1/cookies \
+  -H 'Content-Type: application/json' \
+  -H 'Authorization: Bearer YOUR_CAMOFOX_API_KEY' \
+  -d '{
+    "cookies": [
+      {
+        "name": "session_token",
+        "value": "abc123xyz789",
+        "domain": ".example.com",
+        "path": "/",
+        "expires": -1,
+        "httpOnly": true,
+        "secure": true,
+        "sameSite": "Lax"
+      }
+    ]
+  }'
+```
+
+**Response:**
+```json
+{
+  "ok": true,
+  "userId": "agent1",
+  "count": 1
+}
+```
+
+### Multiple cookies
+
+```bash
+curl -X POST http://localhost:9377/sessions/agent1/cookies \
+  -H 'Content-Type: application/json' \
+  -H 'Authorization: Bearer YOUR_CAMOFOX_API_KEY' \
+  -d '{
+    "cookies": [
+      {
+        "name": "li_at",
+        "value": "AQEDATP...",
+        "domain": ".linkedin.com",
+        "path": "/",
+        "expires": 1735689600,
+        "httpOnly": true,
+        "secure": true
+      },
+      {
+        "name": "JSESSIONID",
+        "value": "ajax:1234567890",
+        "domain": ".linkedin.com",
+        "path": "/",
+        "expires": -1,
+        "httpOnly": true,
+        "secure": true
+      }
+    ]
+  }'
+```
+
+**Response:**
+```json
+{
+  "ok": true,
+  "userId": "agent1",
+  "count": 2
+}
+```
+
+### Error: Missing required fields
+
+```bash
+curl -X POST http://localhost:9377/sessions/agent1/cookies \
+  -H 'Content-Type: application/json' \
+  -H 'Authorization: Bearer YOUR_CAMOFOX_API_KEY' \
+  -d '{
+    "cookies": [
+      {"name": "foo"},
+      {"value": "bar", "domain": "example.com"}
+    ]
+  }'
+```
+
+**Response (400 Bad Request):**
+```json
+{
+  "error": "Invalid cookie objects: each cookie must include name, value, and domain",
+  "invalid": [
+    {"index": 0, "missing": ["value", "domain"]},
+    {"index": 1, "missing": ["name"]}
+  ]
+}
+```
+
+### Error: Authentication disabled
+
+```json
+{
+  "error": "Cookie import is disabled. Set CAMOFOX_API_KEY to enable this endpoint."
+}
+```
+
+### Error: Invalid Bearer token
+
+```json
+{
+  "error": "Forbidden"
+}
+```
+
+### Error: Too many cookies
+
+```json
+{
+  "error": "Too many cookies. Maximum 500 per request."
+}
+```
+
+## Workflow
+
+1. **Export cookies from your browser** using a browser extension (e.g., "cookies.txt" for Chrome/Firefox)
+2. **Parse Netscape format** into Playwright cookie objects (if using OpenClaw, the plugin does this automatically)
+3. **Send cookies to the server** with the Bearer token
+4. **Create tabs** with the same `userId` - they will inherit the injected cookies
+5. **Navigate to authenticated pages** - the browser session is now logged in
+
+## Use cases
+
+- Skip interactive login flows on sites like LinkedIn, Amazon, Twitter
+- Preserve authentication state across sessions
+- Automate tasks that require login without exposing credentials
+- Test authenticated workflows with AI agents
+
+## Session lifecycle
+
+Cookies are scoped to the user's browser session:
+
+- All tabs created with `userId` share the same cookies
+- Sessions expire after **30 minutes of inactivity** (configurable via `SESSION_TIMEOUT_MS`)
+- Cookies persist until session expires or is explicitly closed via `DELETE /sessions/:userId`
+- New cookie imports merge with existing cookies (duplicate names are overwritten)
+
+## Limitations
+
+- Cookies are stored in-memory (not persisted to disk)
+- No built-in Netscape format parser - convert to Playwright format first
+- Domain filtering is not enforced - ensure cookie domains match your target sites
+- The endpoint does not validate cookie expiration dates
+
+## See also
+
+- [Close session endpoint](/api/tabs/close)
+- [Create tab endpoint](/api/tabs/create)
+- [Playwright Cookie API](https://playwright.dev/docs/api/class-browsercontext#browser-context-add-cookies)

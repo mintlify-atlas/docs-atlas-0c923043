@@ -1,0 +1,279 @@
+---
+title: Environment variables
+description: Complete reference of all environment variables for configuring the Camofox Browser server
+---
+
+All configuration is done through environment variables. Set these before starting the server:
+
+```bash
+export CAMOFOX_PORT=9377
+export MAX_SESSIONS=50
+npm start
+```
+
+## Server configuration
+
+Core server settings for port and deployment environment.
+
+| Variable | Description | Type | Default |
+|----------|-------------|------|---------|
+| `CAMOFOX_PORT` | HTTP server port | Integer | `9377` |
+| `PORT` | Fallback port (used if `CAMOFOX_PORT` not set) | Integer | `9377` |
+| `NODE_ENV` | Node.js environment mode | String | `development` |
+
+<Note>
+In production mode (`NODE_ENV=production`), detailed error messages are hidden and only logged server-side.
+</Note>
+
+### Example: Custom port
+
+```bash
+export CAMOFOX_PORT=8080
+npm start
+# Server runs on http://localhost:8080
+```
+
+## Resource limits
+
+Control concurrent sessions, tabs, and memory usage.
+
+| Variable | Description | Type | Default |
+|----------|-------------|------|---------|
+| `MAX_SESSIONS` | Maximum concurrent browser sessions (users) | Integer | `50` |
+| `MAX_TABS_PER_SESSION` | Maximum tabs per user session | Integer | `10` |
+| `MAX_TABS_GLOBAL` | Global tab limit across all sessions | Integer | `10` |
+| `MAX_CONCURRENT_PER_USER` | Concurrent API requests per user | Integer | `3` |
+| `MAX_OLD_SPACE_SIZE` | Node.js V8 heap limit in MB | Integer | `128` |
+
+<Warning>
+When tab limits are reached, the server will recycle the oldest tab instead of rejecting requests. Monitor `MAX_SESSIONS` to prevent resource exhaustion.
+</Warning>
+
+### Example: High-concurrency deployment
+
+```bash
+export MAX_SESSIONS=100
+export MAX_TABS_PER_SESSION=20
+export MAX_CONCURRENT_PER_USER=5
+export MAX_OLD_SPACE_SIZE=512
+npm start
+```
+
+## Timeouts
+
+Fine-tune timeout values for different operations.
+
+| Variable | Description | Type | Default |
+|----------|-------------|------|---------|
+| `SESSION_TIMEOUT_MS` | Session inactivity timeout (ms) | Integer | `1800000` (30 min) |
+| `BROWSER_IDLE_TIMEOUT_MS` | Kill browser when idle with no sessions (ms, 0=never) | Integer | `300000` (5 min) |
+| `HANDLER_TIMEOUT_MS` | Maximum time for any API handler (ms) | Integer | `30000` (30 sec) |
+| `NAVIGATE_TIMEOUT_MS` | Page navigation timeout (ms) | Integer | `25000` (25 sec) |
+| `BUILDREFS_TIMEOUT_MS` | Element ref building timeout (ms) | Integer | `12000` (12 sec) |
+
+<Info>
+The browser launches lazily on first request and shuts down after `BROWSER_IDLE_TIMEOUT_MS` with no active sessions. This keeps memory at ~40MB when idle.
+</Info>
+
+### Example: Faster timeouts for speed
+
+```bash
+export HANDLER_TIMEOUT_MS=15000
+export NAVIGATE_TIMEOUT_MS=10000
+export BUILDREFS_TIMEOUT_MS=6000
+npm start
+```
+
+### Example: Disable idle shutdown
+
+```bash
+export BROWSER_IDLE_TIMEOUT_MS=0
+npm start
+# Browser stays running indefinitely
+```
+
+## Proxy configuration
+
+Route all browser traffic through a proxy with automatic GeoIP detection.
+
+| Variable | Description | Type | Default |
+|----------|-------------|------|---------|
+| `PROXY_HOST` | Proxy hostname or IP address | String | - |
+| `PROXY_PORT` | Proxy port | Integer | - |
+| `PROXY_USERNAME` | Proxy authentication username | String | - |
+| `PROXY_PASSWORD` | Proxy authentication password | String | - |
+
+<Note>
+When a proxy is configured, Camoufox's built-in GeoIP automatically sets browser `locale`, `timezone`, and `geolocation` to match the proxy's exit IP. This ensures the browser fingerprint is consistent with the proxy location.
+</Note>
+
+### Example: Residential proxy
+
+```bash
+export PROXY_HOST=166.88.179.132
+export PROXY_PORT=46040
+export PROXY_USERNAME=myuser
+export PROXY_PASSWORD=mypass
+npm start
+```
+
+### Docker proxy configuration
+
+```bash
+docker run -p 9377:9377 \
+  -e PROXY_HOST=166.88.179.132 \
+  -e PROXY_PORT=46040 \
+  -e PROXY_USERNAME=myuser \
+  -e PROXY_PASSWORD=mypass \
+  camofox-browser
+```
+
+## Security
+
+API keys for protected endpoints (cookie import and server shutdown).
+
+| Variable | Description | Type | Default |
+|----------|-------------|------|---------|
+| `CAMOFOX_API_KEY` | Enable cookie import endpoint (disabled if unset) | String | - |
+| `CAMOFOX_ADMIN_KEY` | Required for `POST /stop` endpoint | String | - |
+| `CAMOFOX_COOKIES_DIR` | Directory for cookie files | Path | `~/.camofox/cookies` |
+
+<Warning>
+Cookie import is **disabled by default**. If `CAMOFOX_API_KEY` is not set, the `/sessions/:userId/cookies` endpoint returns 403. Generate a secure key with `openssl rand -hex 32`.
+</Warning>
+
+### Example: Enable cookie import
+
+```bash
+# Generate a secure key
+KEY=$(openssl rand -hex 32)
+
+# Set it in your environment
+export CAMOFOX_API_KEY="$KEY"
+
+# Start server
+npm start
+
+# Import cookies with Bearer token
+curl -X POST http://localhost:9377/sessions/agent1/cookies \
+  -H "Authorization: Bearer $KEY" \
+  -H "Content-Type: application/json" \
+  -d '{"cookies":[{"name":"session","value":"abc123","domain":"example.com","path":"/"}]}'
+```
+
+### Why environment variables?
+
+API keys are secrets and should never be stored in plaintext config files (`openclaw.json`, `config.json`, etc.). Instead:
+
+- Set in shell profile (`.bashrc`, `.zshrc`)
+- Use systemd unit files (`Environment=CAMOFOX_API_KEY=...`)
+- Docker/Compose: `env_file:` or `-e` flags
+- Fly.io/Railway: `fly secrets set` or web dashboard
+
+### Example: Custom cookies directory
+
+```bash
+export CAMOFOX_COOKIES_DIR="/var/camofox/cookies"
+mkdir -p /var/camofox/cookies
+cp ~/linkedin.txt /var/camofox/cookies/
+npm start
+```
+
+## OpenClaw plugin configuration
+
+When running as an OpenClaw plugin, the server subprocess inherits these variables from `lib/config.js`:
+
+```javascript
+// Forwarded to server subprocess
+serverEnv: {
+  PATH: process.env.PATH,
+  HOME: process.env.HOME,
+  NODE_ENV: process.env.NODE_ENV,
+  CAMOFOX_ADMIN_KEY: process.env.CAMOFOX_ADMIN_KEY,
+  CAMOFOX_API_KEY: process.env.CAMOFOX_API_KEY,
+  CAMOFOX_COOKIES_DIR: process.env.CAMOFOX_COOKIES_DIR,
+  PROXY_HOST: process.env.PROXY_HOST,
+  PROXY_PORT: process.env.PROXY_PORT,
+  PROXY_USERNAME: process.env.PROXY_USERNAME,
+  PROXY_PASSWORD: process.env.PROXY_PASSWORD,
+}
+```
+
+Set variables before starting OpenClaw:
+
+```bash
+export CAMOFOX_API_KEY=$(openssl rand -hex 32)
+openclaw start
+```
+
+## Complete example
+
+Production deployment with all variables:
+
+```bash
+# Server
+export CAMOFOX_PORT=9377
+export NODE_ENV=production
+
+# Security
+export CAMOFOX_API_KEY=$(openssl rand -hex 32)
+export CAMOFOX_ADMIN_KEY=$(openssl rand -hex 32)
+export CAMOFOX_COOKIES_DIR=/var/camofox/cookies
+
+# Limits
+export MAX_SESSIONS=100
+export MAX_TABS_PER_SESSION=20
+export MAX_CONCURRENT_PER_USER=5
+export MAX_OLD_SPACE_SIZE=512
+
+# Timeouts
+export SESSION_TIMEOUT_MS=3600000  # 1 hour
+export BROWSER_IDLE_TIMEOUT_MS=600000  # 10 minutes
+export HANDLER_TIMEOUT_MS=45000
+
+# Proxy (optional)
+export PROXY_HOST=166.88.179.132
+export PROXY_PORT=46040
+export PROXY_USERNAME=myuser
+export PROXY_PASSWORD=mypass
+
+# Launch
+mkdir -p /var/camofox/cookies
+npm start
+```
+
+## Docker Compose example
+
+```yaml
+version: '3.8'
+services:
+  camofox:
+    image: camofox-browser
+    ports:
+      - "9377:9377"
+    environment:
+      - NODE_ENV=production
+      - MAX_SESSIONS=100
+      - MAX_TABS_PER_SESSION=20
+      - SESSION_TIMEOUT_MS=3600000
+      - BROWSER_IDLE_TIMEOUT_MS=600000
+      - PROXY_HOST=166.88.179.132
+      - PROXY_PORT=46040
+      - PROXY_USERNAME=myuser
+      - PROXY_PASSWORD=mypass
+    env_file:
+      - .env.secrets  # CAMOFOX_API_KEY, CAMOFOX_ADMIN_KEY
+    volumes:
+      - ./cookies:/home/node/.camofox/cookies:ro
+    restart: unless-stopped
+```
+
+## Validation
+
+The server validates configuration on startup and logs warnings for invalid values. Check logs for:
+
+```json
+{"ts":"2026-02-28T10:00:00.000Z","level":"info","msg":"launching camoufox","hostOS":"linux","geoip":true}
+{"ts":"2026-02-28T10:00:01.234Z","level":"info","msg":"camoufox launched"}
+{"ts":"2026-02-28T10:00:01.235Z","level":"info","msg":"proxy configured","host":"166.88.179.132","port":"46040"}
+```

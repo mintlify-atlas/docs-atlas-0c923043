@@ -1,0 +1,166 @@
+---
+title: Click element
+description: Click an interactive element by reference or CSS selector
+---
+
+## Endpoint
+
+```
+POST /tabs/:tabId/click
+```
+
+Clicks an element on the page using either an element reference from the snapshot or a CSS selector.
+
+## Authentication
+
+No authentication required. All endpoints use `userId` for session isolation.
+
+## Path parameters
+
+<ParamField path="tabId" type="string" required>
+  The unique identifier of the tab
+</ParamField>
+
+## Body parameters
+
+<ParamField body="userId" type="string" required>
+  User identifier for session isolation
+</ParamField>
+
+<ParamField body="ref" type="string">
+  Element reference from snapshot (e.g., `e1`, `e2`). Either `ref` or `selector` is required.
+</ParamField>
+
+<ParamField body="selector" type="string">
+  CSS selector for the target element. Either `ref` or `selector` is required.
+</ParamField>
+
+<ParamField body="timeout" type="integer" default="5000">
+  Maximum time in milliseconds to wait for the element to become clickable
+</ParamField>
+
+## Response
+
+<ResponseField name="ok" type="boolean">
+  Always `true` on success
+</ResponseField>
+
+<ResponseField name="url" type="string">
+  The URL after the click (may differ if navigation occurred)
+</ResponseField>
+
+<ResponseField name="refsAvailable" type="boolean">
+  Whether element references were successfully rebuilt after the click
+</ResponseField>
+
+## Click behavior
+
+The endpoint implements a three-tier fallback strategy to handle stubborn elements:
+
+1. **Normal click**: Respects visibility, enabled state, and obscuration checks
+2. **Force click**: If intercepted by overlay (e.g., consent dialog), retries with force flag
+3. **Mouse sequence**: If click fails, dispatches full mouse event sequence: `mouseover` → `mouseenter` → `mousedown` → `mouseup` → `click`
+
+After a successful click:
+- Waits 500ms for UI updates
+- Rebuilds element references
+- Updates the current URL
+
+## Element reference handling
+
+When using `ref` parameter:
+- If refs are stale (empty), they're automatically refreshed before the click
+- Duplicate role+name combinations are disambiguated using `.nth()` based on document order
+- Refs reset after navigation - call `/snapshot` first to get fresh refs
+
+## Error codes
+
+- `400` - Missing required parameter (`userId`, or both `ref` and `selector`)
+- `404` - Tab not found
+- `500` - Click failed (element not found, timeout, unknown ref)
+
+## Error messages
+
+- **Unknown ref**: `Unknown ref: e99 (valid refs: e1-e50, 50 total). Refs reset after navigation - call snapshot first.`
+- **Element not found**: `Element not visible (no bounding box)`
+- **Timeout**: `Timeout 5000ms exceeded`
+
+## Examples
+
+### Click by reference
+
+```bash
+curl -X POST http://localhost:9377/tabs/abc123/click \
+  -H "Content-Type: application/json" \
+  -d '{
+    "userId": "agent1",
+    "ref": "e1"
+  }'
+```
+
+```json
+{
+  "ok": true,
+  "url": "https://example.com/next-page",
+  "refsAvailable": true
+}
+```
+
+### Click by CSS selector
+
+```bash
+curl -X POST http://localhost:9377/tabs/abc123/click \
+  -H "Content-Type: application/json" \
+  -d '{
+    "userId": "agent1",
+    "selector": "button.submit-btn"
+  }'
+```
+
+```json
+{
+  "ok": true,
+  "url": "https://example.com",
+  "refsAvailable": true
+}
+```
+
+### Click with custom timeout
+
+```bash
+curl -X POST http://localhost:9377/tabs/abc123/click \
+  -H "Content-Type: application/json" \
+  -d '{
+    "userId": "agent1",
+    "ref": "e5",
+    "timeout": 10000
+  }'
+```
+
+### Error: Unknown ref
+
+```bash
+curl -X POST http://localhost:9377/tabs/abc123/click \
+  -H "Content-Type: application/json" \
+  -d '{
+    "userId": "agent1",
+    "ref": "e999"
+  }'
+```
+
+```json
+{
+  "error": "Unknown ref: e999 (valid refs: e1-e24, 24 total). Refs reset after navigation - call snapshot first."
+}
+```
+
+## Tab locking
+
+Click operations are serialized per tab to prevent race conditions. If another operation is in progress, the request will wait up to 30 seconds before proceeding.
+
+## Best practices
+
+1. Always call `/snapshot` after navigation to refresh element refs
+2. Use `ref` (not `selector`) when possible - refs are more stable and semantic
+3. For dynamically loaded content, increase the `timeout` value
+4. Check `refsAvailable` in the response - if `false`, call `/snapshot` before next interaction

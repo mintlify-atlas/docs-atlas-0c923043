@@ -1,0 +1,183 @@
+---
+title: Scroll page
+description: Scroll the page in a specified direction
+---
+
+## Endpoint
+
+```
+POST /tabs/:tabId/scroll
+```
+
+Scrolls the page viewport in the specified direction by a given pixel amount.
+
+## Authentication
+
+No authentication required. All endpoints use `userId` for session isolation.
+
+## Path parameters
+
+<ParamField path="tabId" type="string" required>
+  The unique identifier of the tab
+</ParamField>
+
+## Body parameters
+
+<ParamField body="userId" type="string" required>
+  User identifier for session isolation
+</ParamField>
+
+<ParamField body="direction" type="string" default="down">
+  Scroll direction. Valid values: `up`, `down`, `left`, `right`
+</ParamField>
+
+<ParamField body="amount" type="integer" default="500">
+  Number of pixels to scroll in the specified direction
+</ParamField>
+
+## Response
+
+<ResponseField name="ok" type="boolean">
+  Always `true` on success
+</ResponseField>
+
+## Behavior
+
+- Scrolling is performed using mouse wheel events
+- After scrolling, waits 300ms for scroll animations and lazy-loaded content
+- Does not invalidate element references (use `/snapshot` if new content appears)
+- Scrolling beyond page bounds is handled gracefully (no error)
+
+## Default scroll amounts
+
+If `amount` is not specified:
+- Default: 500 pixels (approximately half a viewport on typical screens)
+
+Common scroll amounts:
+- **Small**: 200-300 pixels (peek at more content)
+- **Medium**: 500 pixels (default, half viewport)
+- **Large**: 1000+ pixels (jump to new section)
+- **Full page**: Use viewport height (typically 720-1080)
+
+## Error codes
+
+- `400` - Missing required parameter (`userId`)
+- `404` - Tab not found
+- `500` - Internal server error
+
+## Examples
+
+### Scroll down (default)
+
+```bash
+curl -X POST http://localhost:9377/tabs/abc123/scroll \
+  -H "Content-Type: application/json" \
+  -d '{
+    "userId": "agent1"
+  }'
+```
+
+```json
+{
+  "ok": true
+}
+```
+
+### Scroll down with custom amount
+
+```bash
+curl -X POST http://localhost:9377/tabs/abc123/scroll \
+  -H "Content-Type: application/json" \
+  -d '{
+    "userId": "agent1",
+    "direction": "down",
+    "amount": 1000
+  }'
+```
+
+### Scroll up
+
+```bash
+curl -X POST http://localhost:9377/tabs/abc123/scroll \
+  -H "Content-Type: application/json" \
+  -d '{
+    "userId": "agent1",
+    "direction": "up",
+    "amount": 500
+  }'
+```
+
+### Scroll horizontally
+
+```bash
+curl -X POST http://localhost:9377/tabs/abc123/scroll \
+  -H "Content-Type: application/json" \
+  -d '{
+    "userId": "agent1",
+    "direction": "right",
+    "amount": 300
+  }'
+```
+
+## Use cases
+
+### Load lazy content
+
+Many modern websites load content as you scroll. After scrolling, call `/snapshot` to access new elements:
+
+```bash
+# 1. Scroll to trigger lazy load
+curl -X POST http://localhost:9377/tabs/abc123/scroll \
+  -d '{"userId": "agent1", "direction": "down", "amount": 1000}'
+
+# 2. Get new snapshot with loaded content
+curl "http://localhost:9377/tabs/abc123/snapshot?userId=agent1"
+```
+
+### Navigate paginated content
+
+For infinite scroll pages, scroll down multiple times until desired content appears:
+
+```bash
+for i in {1..5}; do
+  curl -X POST http://localhost:9377/tabs/abc123/scroll \
+    -d '{"userId": "agent1", "direction": "down", "amount": 800}'
+  sleep 1
+done
+```
+
+### Scroll to top
+
+```bash
+curl -X POST http://localhost:9377/tabs/abc123/scroll \
+  -H "Content-Type: application/json" \
+  -d '{
+    "userId": "agent1",
+    "direction": "up",
+    "amount": 99999
+  }'
+```
+
+### Scroll to bottom
+
+```bash
+curl -X POST http://localhost:9377/tabs/abc123/scroll \
+  -H "Content-Type: application/json" \
+  -d '{
+    "userId": "agent1",
+    "direction": "down",
+    "amount": 99999
+  }'
+```
+
+## Best practices
+
+1. **Wait after scrolling**: The 300ms built-in delay may not be enough for heavy pages - consider waiting 1-2s before snapshot
+2. **Scroll incrementally**: Multiple small scrolls (500px) are better than one large scroll for triggering lazy loaders
+3. **Check for new content**: Compare `refsCount` before/after scrolling to detect loaded content
+4. **Avoid excessive scrolling**: Scrolling beyond page bounds is safe but wastes time
+
+## Related endpoints
+
+- **GET /tabs/:tabId/snapshot** - Get page snapshot after scrolling to access new elements
+- **GET /tabs/:tabId/links** - Extract links without scrolling (may miss lazy-loaded links)

@@ -1,0 +1,245 @@
+---
+title: Get links
+description: Extract all links from the current page
+---
+
+## Endpoint
+
+```
+GET /tabs/:tabId/links
+```
+
+Extracts all HTTP/HTTPS links from the current page with their anchor text.
+
+## Authentication
+
+No authentication required. All endpoints use `userId` for session isolation.
+
+## Path parameters
+
+<ParamField path="tabId" type="string" required>
+  The unique identifier of the tab
+</ParamField>
+
+## Query parameters
+
+<ParamField query="userId" type="string" required>
+  User identifier for session isolation
+</ParamField>
+
+<ParamField query="limit" type="integer" default="50">
+  Maximum number of links to return per request (used for pagination)
+</ParamField>
+
+<ParamField query="offset" type="integer" default="0">
+  Starting index for pagination (0-based)
+</ParamField>
+
+## Response
+
+<ResponseField name="links" type="array">
+  Array of link objects
+  
+  <Expandable title="Link object fields">
+    <ResponseField name="url" type="string">
+      The absolute URL of the link (href attribute)
+    </ResponseField>
+    
+    <ResponseField name="text" type="string">
+      The visible anchor text (trimmed, max 100 characters)
+    </ResponseField>
+  </Expandable>
+</ResponseField>
+
+<ResponseField name="pagination" type="object">
+  Pagination metadata
+  
+  <Expandable title="Pagination fields">
+    <ResponseField name="total" type="integer">
+      Total number of links found on the page
+    </ResponseField>
+    
+    <ResponseField name="offset" type="integer">
+      Current offset (from query parameter)
+    </ResponseField>
+    
+    <ResponseField name="limit" type="integer">
+      Current limit (from query parameter)
+    </ResponseField>
+    
+    <ResponseField name="hasMore" type="boolean">
+      Whether more links are available beyond the current page
+    </ResponseField>
+  </Expandable>
+</ResponseField>
+
+## Link extraction behavior
+
+- Only links with `href` attribute are included
+- Only HTTP/HTTPS URLs are included (filters out `mailto:`, `tel:`, `javascript:`, etc.)
+- Anchor text is trimmed and truncated to 100 characters
+- Empty anchor text appears as empty string `""`
+- Links are returned in DOM order (top to bottom)
+- No deduplication - duplicate URLs appear multiple times if they exist multiple times in the DOM
+
+## Error codes
+
+- `400` - Missing required parameter (`userId`)
+- `404` - Tab not found
+- `500` - Internal server error
+
+## Examples
+
+### Get first 50 links (default)
+
+```bash
+curl "http://localhost:9377/tabs/abc123/links?userId=agent1"
+```
+
+```json
+{
+  "links": [
+    {
+      "url": "https://example.com/about",
+      "text": "About Us"
+    },
+    {
+      "url": "https://example.com/contact",
+      "text": "Contact"
+    },
+    {
+      "url": "https://example.com/products",
+      "text": "Products"
+    }
+  ],
+  "pagination": {
+    "total": 3,
+    "offset": 0,
+    "limit": 50,
+    "hasMore": false
+  }
+}
+```
+
+### Get links with custom limit
+
+```bash
+curl "http://localhost:9377/tabs/abc123/links?userId=agent1&limit=10"
+```
+
+```json
+{
+  "links": [
+    {"url": "https://example.com/page1", "text": "Page 1"},
+    {"url": "https://example.com/page2", "text": "Page 2"},
+    {"url": "https://example.com/page3", "text": "Page 3"},
+    {"url": "https://example.com/page4", "text": "Page 4"},
+    {"url": "https://example.com/page5", "text": "Page 5"},
+    {"url": "https://example.com/page6", "text": "Page 6"},
+    {"url": "https://example.com/page7", "text": "Page 7"},
+    {"url": "https://example.com/page8", "text": "Page 8"},
+    {"url": "https://example.com/page9", "text": "Page 9"},
+    {"url": "https://example.com/page10", "text": "Page 10"}
+  ],
+  "pagination": {
+    "total": 156,
+    "offset": 0,
+    "limit": 10,
+    "hasMore": true
+  }
+}
+```
+
+### Paginate through links
+
+```bash
+# First page
+curl "http://localhost:9377/tabs/abc123/links?userId=agent1&limit=10&offset=0"
+
+# Second page
+curl "http://localhost:9377/tabs/abc123/links?userId=agent1&limit=10&offset=10"
+
+# Third page
+curl "http://localhost:9377/tabs/abc123/links?userId=agent1&limit=10&offset=20"
+```
+
+### Get all links (large page)
+
+```bash
+curl "http://localhost:9377/tabs/abc123/links?userId=agent1&limit=9999"
+```
+
+## Use cases
+
+### Site crawling
+
+Extract all links from a page to build a crawl queue:
+
+```bash
+# Navigate to seed URL
+curl -X POST http://localhost:9377/tabs/abc123/navigate \
+  -d '{"userId": "agent1", "url": "https://example.com"}'
+
+# Extract all links
+curl "http://localhost:9377/tabs/abc123/links?userId=agent1&limit=500"
+```
+
+### Find specific link
+
+Search for a link by text or URL pattern (client-side filtering):
+
+```bash
+curl "http://localhost:9377/tabs/abc123/links?userId=agent1" | \
+  jq '.links[] | select(.text | contains("documentation"))'
+```
+
+### Verify navigation options
+
+Check what links are available before choosing where to navigate:
+
+```bash
+curl "http://localhost:9377/tabs/abc123/links?userId=agent1&limit=20"
+```
+
+## Filtering and deduplication
+
+The endpoint does **not** perform server-side filtering or deduplication. To filter links:
+
+### Client-side deduplication (bash + jq)
+
+```bash
+curl "http://localhost:9377/tabs/abc123/links?userId=agent1" | \
+  jq '.links | unique_by(.url)'
+```
+
+### Filter by domain
+
+```bash
+curl "http://localhost:9377/tabs/abc123/links?userId=agent1" | \
+  jq '.links[] | select(.url | contains("example.com"))'
+```
+
+### Filter by anchor text
+
+```bash
+curl "http://localhost:9377/tabs/abc123/links?userId=agent1" | \
+  jq '.links[] | select(.text | test("product|category"; "i"))'
+```
+
+## Comparison with snapshot
+
+| Feature | `/links` | `/snapshot` |
+|---------|----------|-------------|
+| **Purpose** | Extract all links | Interactive automation |
+| **Output** | Array of URLs + text | Accessibility tree with refs |
+| **Link visibility** | All links (including hidden) | Only visible interactive elements |
+| **Performance** | Fast (simple DOM query) | Slower (builds aria tree + refs) |
+| **Use case** | Site crawling, link discovery | Clicking specific links |
+
+## Best practices
+
+1. **Use moderate limits**: Start with `limit=50`, increase only if needed
+2. **Scroll first for lazy-loaded links**: Call `/scroll` before `/links` for infinite-scroll pages
+3. **Deduplicate client-side**: Use `jq` or similar tools to remove duplicate URLs
+4. **Filter by domain**: Avoid following external links when crawling a specific site
+5. **Check `hasMore`**: Always verify pagination metadata before assuming you have all links

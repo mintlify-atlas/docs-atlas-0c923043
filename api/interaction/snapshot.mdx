@@ -1,0 +1,189 @@
+---
+title: Get snapshot
+description: Retrieve the accessibility tree snapshot of the current page with element references
+---
+
+## Endpoint
+
+```
+GET /tabs/:tabId/snapshot
+```
+
+Returns the current page's accessibility tree as a text snapshot with interactive element references (`e1`, `e2`, etc.) that can be used for clicking and typing.
+
+## Authentication
+
+No authentication required. All endpoints use `userId` for session isolation.
+
+## Path parameters
+
+<ParamField path="tabId" type="string" required>
+  The unique identifier of the tab
+</ParamField>
+
+## Query parameters
+
+<ParamField query="userId" type="string" required>
+  User identifier for session isolation
+</ParamField>
+
+<ParamField query="includeScreenshot" type="boolean" default="false">
+  Whether to include a base64-encoded PNG screenshot in the response
+</ParamField>
+
+<ParamField query="offset" type="integer" default="0">
+  Character offset for pagination. Use `nextOffset` from previous response to fetch next chunk.
+</ParamField>
+
+<ParamField query="format" type="string" default="text">
+  Response format (currently only `text` is supported)
+</ParamField>
+
+## Response
+
+<ResponseField name="url" type="string">
+  The current URL of the tab
+</ResponseField>
+
+<ResponseField name="snapshot" type="string">
+  Accessibility tree snapshot with element references in YAML-like format. Interactive elements are annotated with refs like `[e1]`, `[e2]`.
+</ResponseField>
+
+<ResponseField name="refsCount" type="integer">
+  Total number of interactive element references available
+</ResponseField>
+
+<ResponseField name="truncated" type="boolean">
+  Whether the snapshot was truncated due to size limits
+</ResponseField>
+
+<ResponseField name="totalChars" type="integer">
+  Total character count of the full snapshot (before truncation)
+</ResponseField>
+
+<ResponseField name="hasMore" type="boolean">
+  Whether more content is available beyond the current chunk
+</ResponseField>
+
+<ResponseField name="nextOffset" type="integer" optional>
+  Character offset to use for fetching the next chunk (only present if `hasMore` is true)
+</ResponseField>
+
+<ResponseField name="screenshot" type="object" optional>
+  Screenshot data (only present if `includeScreenshot=true`)
+  
+  <Expandable title="Screenshot fields">
+    <ResponseField name="data" type="string">
+      Base64-encoded PNG image data
+    </ResponseField>
+    
+    <ResponseField name="mimeType" type="string">
+      Always `image/png`
+    </ResponseField>
+  </Expandable>
+</ResponseField>
+
+## Pagination
+
+Large pages are automatically truncated to prevent token overflow. The snapshot is limited to 80,000 characters (~20K tokens), with the last 5,000 characters preserved for pagination/navigation links.
+
+- **First request**: `offset=0` returns the head of the snapshot plus tail (pagination links)
+- **Subsequent requests**: Use `nextOffset` value from the previous response
+- The tail (last 5K chars) is appended to every chunk so navigation refs remain accessible
+
+## Element references
+
+Interactive elements (buttons, links, textboxes, checkboxes, etc.) are annotated with refs:
+
+```yaml
+- button "Submit" [e1]
+- link "More information..." [e2]
+- textbox "Search" [e3]
+```
+
+These refs can be used with `/click` and `/type` endpoints. **Refs reset after navigation** - always call `/snapshot` after navigating to get fresh refs.
+
+## Error codes
+
+- `400` - Missing required parameter (`userId`)
+- `404` - Tab not found
+- `500` - Internal server error
+
+## Examples
+
+### Basic snapshot
+
+```bash
+curl "http://localhost:9377/tabs/abc123/snapshot?userId=agent1"
+```
+
+```json
+{
+  "url": "https://example.com",
+  "snapshot": "- heading \"Example Domain\"\n- paragraph \"This domain is for use in illustrative examples...\"\n- link \"More information...\" [e1]\n",
+  "refsCount": 1,
+  "truncated": false,
+  "totalChars": 156,
+  "hasMore": false,
+  "nextOffset": null
+}
+```
+
+### Snapshot with screenshot
+
+```bash
+curl "http://localhost:9377/tabs/abc123/snapshot?userId=agent1&includeScreenshot=true"
+```
+
+```json
+{
+  "url": "https://example.com",
+  "snapshot": "- heading \"Example Domain\"...",
+  "refsCount": 1,
+  "truncated": false,
+  "totalChars": 156,
+  "hasMore": false,
+  "nextOffset": null,
+  "screenshot": {
+    "data": "iVBORw0KGgoAAAANSUhEUgAAA...",
+    "mimeType": "image/png"
+  }
+}
+```
+
+### Paginated snapshot
+
+```bash
+# First chunk
+curl "http://localhost:9377/tabs/abc123/snapshot?userId=agent1"
+```
+
+```json
+{
+  "url": "https://longpage.com",
+  "snapshot": "[content]\n[... truncated at char 75000 of 120000. Call snapshot with offset=75000 to see more. Pagination links below. ...]\n[tail content with pagination links]",
+  "refsCount": 245,
+  "truncated": true,
+  "totalChars": 120000,
+  "hasMore": true,
+  "nextOffset": 75000
+}
+```
+
+```bash
+# Next chunk
+curl "http://localhost:9377/tabs/abc123/snapshot?userId=agent1&offset=75000"
+```
+
+## Caching behavior
+
+For `offset > 0` requests, the server uses a cached snapshot from the last `offset=0` call. This ensures consistent pagination without rebuilding the accessibility tree. The cache is invalidated after navigation or interaction.
+
+## Excluded elements
+
+The following elements are excluded from snapshots to avoid interference:
+
+- Comboboxes (date pickers, complex dropdowns)
+- Elements matching patterns: `date`, `calendar`, `picker`, `datepicker`
+
+This prevents accidental triggering of complex widgets during automation.

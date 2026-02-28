@@ -1,0 +1,261 @@
+---
+title: Proxy and GeoIP configuration
+description: Route browser traffic through residential proxies with automatic locale, timezone, and geolocation fingerprinting
+---
+
+Camofox can route all browser traffic through a proxy server and automatically configure the browser fingerprint to match the proxy's geographic location. This ensures consistent geolocation signals across all browser APIs.
+
+## Environment variables
+
+Set these environment variables before starting the Camofox server:
+
+| Variable | Description | Required |
+|----------|-------------|----------|
+| `PROXY_HOST` | Proxy hostname or IP address | Yes |
+| `PROXY_PORT` | Proxy port number | Yes |
+| `PROXY_USERNAME` | Proxy authentication username | No |
+| `PROXY_PASSWORD` | Proxy authentication password | No |
+
+## Configuration
+
+### Local development
+
+```bash
+export PROXY_HOST=166.88.179.132
+export PROXY_PORT=46040
+export PROXY_USERNAME=myuser
+export PROXY_PASSWORD=mypass
+npm start
+```
+
+### Docker deployment
+
+```bash
+docker run -p 9377:9377 \
+  -e PROXY_HOST=166.88.179.132 \
+  -e PROXY_PORT=46040 \
+  -e PROXY_USERNAME=myuser \
+  -e PROXY_PASSWORD=mypass \
+  camofox-browser
+```
+
+### Fly.io deployment
+
+```bash
+fly secrets set PROXY_HOST=166.88.179.132
+fly secrets set PROXY_PORT=46040
+fly secrets set PROXY_USERNAME=myuser
+fly secrets set PROXY_PASSWORD=mypass
+fly deploy
+```
+
+### Railway deployment
+
+In the Railway dashboard:
+
+1. Go to your service → Variables
+2. Add:
+   - `PROXY_HOST` = `166.88.179.132`
+   - `PROXY_PORT` = `46040`
+   - `PROXY_USERNAME` = `myuser`
+   - `PROXY_PASSWORD` = `mypass`
+3. Redeploy
+
+## How GeoIP works
+
+When proxy configuration is detected, Camofox's GeoIP feature automatically:
+
+1. **Resolves the proxy's exit IP address** via geo-lookup
+2. **Sets browser locale** to match the IP's country (e.g., `en-GB` for UK, `de-DE` for Germany)
+3. **Sets timezone** to match the IP's region (e.g., `Europe/London`, `America/New_York`)
+4. **Sets geolocation coordinates** to match the IP's city (latitude/longitude)
+5. **Configures Camoufox fingerprint** to align with the derived locale
+
+This happens at browser launch time. All tabs created in the browser session inherit these settings.
+
+### Without proxy
+
+If no proxy is configured, Camofox uses default US-based fingerprinting:
+
+- **Locale**: `en-US`
+- **Timezone**: `America/Los_Angeles`
+- **Geolocation**: San Francisco, CA coordinates (37.7749, -122.4194)
+
+## Fingerprint consistency
+
+GeoIP ensures that **all geolocation signals** exposed to websites are consistent:
+
+| Browser API | Value Source |
+|-------------|-------------|
+| `navigator.language` | Derived from proxy IP |
+| `navigator.languages` | Derived from proxy IP |
+| `Intl.DateTimeFormat().resolvedOptions().timeZone` | Derived from proxy IP |
+| `navigator.geolocation.getCurrentPosition()` | Derived from proxy IP |
+| HTTP `Accept-Language` header | Derived from proxy IP |
+
+This prevents geolocation mismatches that can trigger bot detection. For example, if your proxy exits in Germany but your browser claims to be in California, sites may flag the session as suspicious.
+
+<Warning>
+**Do not override locale/timezone in the Playwright context** when using GeoIP. Let Camoufox manage these settings automatically.
+</Warning>
+
+## Proxy protocol
+
+Camofox uses HTTP CONNECT tunneling (`server.js:286-298`):
+
+```javascript
+const proxy = {
+  server: `http://${PROXY_HOST}:${PROXY_PORT}`,
+  username: PROXY_USERNAME,
+  password: PROXY_PASSWORD,
+};
+```
+
+All traffic (HTTP, HTTPS, WebSocket) is routed through the proxy. The server supports:
+
+- **HTTP proxies** with CONNECT tunneling
+- **SOCKS5 proxies** (if your proxy supports it)
+- **Basic authentication** via username/password
+
+## Implementation details
+
+### Proxy config resolution
+
+The `buildProxyConfig()` function (`server.js:285-299`) checks for proxy environment variables at startup:
+
+```javascript
+function buildProxyConfig() {
+  const { host, port, username, password } = CONFIG.proxy;
+  
+  if (!host || !port) {
+    log('info', 'no proxy configured');
+    return null;
+  }
+  
+  log('info', 'proxy configured', { host, port });
+  return {
+    server: `http://${host}:${port}`,
+    username,
+    password,
+  };
+}
+```
+
+If `PROXY_HOST` or `PROXY_PORT` is missing, proxy is disabled.
+
+### Browser launch with GeoIP
+
+When launching the browser (`server.js:379-396`), the proxy config is passed to Camoufox's `launchOptions()`:
+
+```javascript
+const options = await launchOptions({
+  headless: true,
+  os: hostOS,
+  humanize: true,
+  enable_cache: true,
+  proxy: proxy,
+  geoip: !!proxy,  // Enable GeoIP if proxy is set
+});
+
+browser = await firefox.launch(options);
+```
+
+The `geoip: !!proxy` flag tells Camoufox to perform geo-lookup and configure fingerprinting.
+
+### Context creation without overrides
+
+When creating browser contexts for sessions (`server.js:432-443`), the code checks if a proxy is configured:
+
+```javascript
+const contextOptions = {
+  viewport: { width: 1280, height: 720 },
+  permissions: ['geolocation'],
+};
+
+// When geoip is active (proxy configured), camoufox auto-configures
+// locale/timezone/geolocation from the proxy IP. Without proxy, use defaults.
+if (!CONFIG.proxy.host) {
+  contextOptions.locale = 'en-US';
+  contextOptions.timezoneId = 'America/Los_Angeles';
+  contextOptions.geolocation = { latitude: 37.7749, longitude: -122.4194 };
+}
+
+const context = await browser.newContext(contextOptions);
+```
+
+If proxy is configured, locale/timezone/geolocation are **not set** in the context options, allowing Camoufox's GeoIP to apply them automatically.
+
+## Residential proxies
+
+For best results, use residential proxies instead of datacenter proxies. Residential IPs are less likely to be flagged by anti-bot systems.
+
+**Recommended providers:**
+
+- [Bright Data](https://brightdata.com) - Residential/mobile proxies
+- [Smartproxy](https://smartproxy.com) - Residential proxies
+- [Oxylabs](https://oxylabs.io) - Datacenter and residential proxies
+
+<Tip>
+Rotating residential proxies are ideal for scraping multiple pages without getting rate-limited. Sticky session proxies are better for maintaining login state across requests.
+</Tip>
+
+## Proxy rotation
+
+Camofox does not rotate proxies automatically. Each browser instance uses a single proxy configuration for its entire lifetime.
+
+For proxy rotation:
+
+1. **Restart the browser** with a new proxy config (not recommended - slow)
+2. **Deploy multiple Camofox instances** with different proxy configs behind a load balancer
+3. **Use rotating proxies** from your provider (proxy endpoint rotates IPs per request)
+
+Option 3 is recommended. Most residential proxy providers support session-based rotation where each new TCP connection gets a new IP.
+
+## Debugging proxy issues
+
+### Connection failures
+
+**Symptoms**: Browser fails to launch, all page loads timeout
+
+**Causes**:
+- Proxy host/port unreachable
+- Firewall blocking outbound connections
+- Proxy authentication failed
+
+**Fix**: Test the proxy with curl:
+
+```bash
+curl -x http://username:password@166.88.179.132:46040 https://api.ipify.org
+```
+
+This should return the proxy's exit IP. If it fails, the proxy config is incorrect.
+
+### GeoIP mismatch
+
+**Symptoms**: Browser locale/timezone don't match proxy location
+
+**Causes**:
+- GeoIP database out of date
+- Proxy IP is newly allocated and not in geo databases
+- Context options override GeoIP settings
+
+**Fix**: Ensure you're not setting `locale`, `timezoneId`, or `geolocation` in the context options when using GeoIP.
+
+### Slow page loads
+
+**Causes**:
+- High latency proxy
+- Proxy bandwidth throttling
+
+**Fix**: Use a faster proxy or increase `NAVIGATE_TIMEOUT_MS` (default 30s).
+
+## Logging
+
+Camofox logs proxy status at startup:
+
+```json
+{"ts":"2026-02-28T10:00:00.000Z","level":"info","msg":"proxy configured","host":"166.88.179.132","port":46040}
+{"ts":"2026-02-28T10:00:01.234Z","level":"info","msg":"launching camoufox","hostOS":"linux","geoip":true}
+```
+
+If `geoip: true`, GeoIP is active.

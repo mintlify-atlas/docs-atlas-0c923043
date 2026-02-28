@@ -1,0 +1,293 @@
+---
+title: Cookie import
+description: Import browser cookies into Camofox for authenticated browsing on sites like LinkedIn, Amazon, and more
+---
+
+Cookie import allows you to inject cookies from your real browser into Camofox sessions, skipping interactive login flows. This is essential for accessing sites that require authentication.
+
+<Warning>
+Cookie import is **disabled by default**. You must set `CAMOFOX_API_KEY` to enable this endpoint for security reasons.
+</Warning>
+
+## Security model
+
+Cookie injection moves Camofox from "anonymous browsing" to "authenticated browsing." Because cookies are sensitive credentials, the import endpoint requires API key authentication:
+
+- **Disabled by default**: If `CAMOFOX_API_KEY` is not set, all cookie import requests return `403 Forbidden`
+- **Bearer token authentication**: Requests must include `Authorization: Bearer <CAMOFOX_API_KEY>` header
+- **Timing-safe comparison**: The server uses constant-time comparison to prevent timing attacks
+- **Field sanitization**: Only allowed Playwright cookie fields are accepted (name, value, domain, path, expires, httpOnly, secure, sameSite)
+- **Size limits**: Maximum 500 cookies per request, 5MB file size limit
+- **Path traversal protection**: Cookie file paths are resolved relative to `CAMOFOX_COOKIES_DIR` and cannot escape that directory
+
+## Setup workflow
+
+<Steps>
+
+<Step title="Generate a secret API key">
+
+Generate a cryptographically secure random key:
+
+```bash
+# macOS / Linux
+openssl rand -hex 32
+```
+
+This produces a 64-character hex string like:
+```
+a1b2c3d4e5f6...  
+```
+
+</Step>
+
+<Step title="Set the environment variable">
+
+The same key is used by both the OpenClaw plugin (to authenticate requests) and the Camofox server (to verify them). Since both run from the same environment, set it once:
+
+```bash
+export CAMOFOX_API_KEY="your-generated-key"
+openclaw start
+```
+
+<Note>
+**Why an environment variable?** Plugin config in `openclaw.json` is stored in plaintext, so secrets don't belong there. Set `CAMOFOX_API_KEY` in your shell profile, systemd unit, Docker env, or Fly.io secrets.
+</Note>
+
+For Docker deployment:
+
+```bash
+docker run -p 9377:9377 \
+  -e CAMOFOX_API_KEY="your-generated-key" \
+  camofox-browser
+```
+
+For Fly.io:
+
+```bash
+fly secrets set CAMOFOX_API_KEY="your-generated-key"
+```
+
+</Step>
+
+<Step title="Export cookies from your browser">
+
+Install a browser extension that exports Netscape-format cookie files:
+
+- **Chrome**: [cookies.txt](https://chrome.google.com/webstore/detail/cookiestxt/njabckikapfpffapmjgojcnbfjonfjfg)
+- **Firefox**: [cookies.txt](https://addons.mozilla.org/en-US/firefox/addon/cookies-txt/)
+
+1. Navigate to the site you want to authenticate (e.g., linkedin.com)
+2. Click the extension icon
+3. Export cookies for the current site
+4. Save the file (e.g., `linkedin_cookies.txt`)
+
+</Step>
+
+<Step title="Place the cookie file">
+
+Copy the exported file to Camofox's cookie directory:
+
+```bash
+mkdir -p ~/.camofox/cookies
+cp ~/Downloads/linkedin_cookies.txt ~/.camofox/cookies/linkedin.txt
+```
+
+The default directory is `~/.camofox/cookies/`. Override with the `CAMOFOX_COOKIES_DIR` environment variable.
+
+<Tip>
+For Docker deployments, mount the cookies directory as a read-only volume:
+
+```bash
+docker run -p 9377:9377 \
+  -e CAMOFOX_API_KEY="your-key" \
+  -v ~/.camofox/cookies:/root/.camofox/cookies:ro \
+  camofox-browser
+```
+</Tip>
+
+</Step>
+
+<Step title="Import cookies into your session">
+
+### Using the OpenClaw plugin
+
+Ask your agent to import cookies:
+
+> Import my LinkedIn cookies from linkedin.txt
+
+The agent calls `camofox_import_cookies` → reads the file → POSTs to the server with the Bearer token → cookies are injected into the browser session.
+
+### Using the standalone API
+
+Read and parse the cookie file, then POST to the session endpoint:
+
+```bash
+curl -X POST http://localhost:9377/sessions/agent1/cookies \
+  -H 'Content-Type: application/json' \
+  -H 'Authorization: Bearer YOUR_CAMOFOX_API_KEY' \
+  -d '{
+    "cookies": [
+      {
+        "name": "li_at",
+        "value": "AQEDATEABCDEFabcdef123456",
+        "domain": ".linkedin.com",
+        "path": "/",
+        "expires": 1735689600,
+        "httpOnly": true,
+        "secure": true
+      }
+    ]
+  }'
+```
+
+<Note>
+Cookies must be in Playwright's cookie object format. Use the `lib/cookies.js` module's `parseNetscapeCookieFile()` function to convert Netscape format to Playwright format.
+</Note>
+
+</Step>
+
+<Step title="Verify authentication">
+
+Subsequent `camofox_create_tab` or `/tabs` requests to the authenticated domain will use the imported cookies:
+
+```bash
+POST /tabs
+{
+  "userId": "agent1",
+  "sessionKey": "task1",
+  "url": "https://www.linkedin.com/feed/"
+}
+```
+
+The page loads with your authenticated session.
+
+</Step>
+
+</Steps>
+
+## How it works
+
+The cookie import flow isolates file I/O, parsing, and network operations:
+
+```
+~/.camofox/cookies/linkedin.txt          (Netscape format, on disk)
+        │
+        ▼
+camofox_import_cookies tool              (parses file, filters by domain)
+        │
+        ▼  POST /sessions/:userId/cookies
+        │  Authorization: Bearer <CAMOFOX_API_KEY>
+        │  Body: { cookies: [Playwright cookie objects] }
+        ▼
+camofox server                           (validates, sanitizes, injects)
+        │
+        ▼  context.addCookies(...)
+        │
+Camoufox browser session                 (authenticated browsing)
+```
+
+### File parsing
+
+The `lib/cookies.js` module parses Netscape-format cookie files:
+
+```
+# Netscape HTTP Cookie File
+.linkedin.com	TRUE	/	TRUE	1735689600	li_at	AQEDATEABCDEF...
+```
+
+Supports `#HttpOnly_` prefix for HttpOnly cookies. The parser:
+
+1. Strips UTF-8 BOM if present
+2. Skips comments (lines starting with `#` except `#HttpOnly_`)
+3. Parses tab-separated fields: `domain`, `flag`, `path`, `secure`, `expires`, `name`, `value`
+4. Converts to Playwright cookie objects with required fields
+
+### Server validation
+
+The server endpoint (`server.js:102-168`) validates:
+
+- **API key**: Bearer token must match `CAMOFOX_API_KEY` using timing-safe comparison
+- **Request structure**: `cookies` field must be an array
+- **Cookie count**: Maximum 500 cookies per request
+- **Cookie objects**: Each must have `name`, `value`, and `domain` fields
+- **Field allowlist**: Only `name`, `value`, `domain`, `path`, `expires`, `httpOnly`, `secure`, `sameSite` are preserved
+
+Invalid requests return `400 Bad Request` with details.
+
+## API reference
+
+### POST /sessions/:userId/cookies
+
+Inject cookies into a user's browser context.
+
+**Headers:**
+```
+Authorization: Bearer YOUR_CAMOFOX_API_KEY
+Content-Type: application/json
+```
+
+**Body:**
+```json
+{
+  "cookies": [
+    {
+      "name": "session_id",
+      "value": "abc123",
+      "domain": "example.com",
+      "path": "/",
+      "expires": -1,
+      "httpOnly": false,
+      "secure": false,
+      "sameSite": "Lax"
+    }
+  ]
+}
+```
+
+**Response (200 OK):**
+```json
+{
+  "ok": true,
+  "userId": "agent1",
+  "count": 1
+}
+```
+
+**Response (403 Forbidden):**
+```json
+{
+  "error": "Cookie import is disabled. Set CAMOFOX_API_KEY to enable this endpoint."
+}
+```
+
+## Environment variables
+
+| Variable | Description | Default |
+|----------|-------------|--------|
+| `CAMOFOX_API_KEY` | API key for cookie import (disabled if unset) | - |
+| `CAMOFOX_COOKIES_DIR` | Directory for cookie files | `~/.camofox/cookies` |
+
+## Common issues
+
+### 403 Forbidden
+
+**Cause**: `CAMOFOX_API_KEY` is not set or the Bearer token is incorrect.
+
+**Fix**: Set the environment variable before starting the server:
+
+```bash
+export CAMOFOX_API_KEY="your-key"
+npm start
+```
+
+### Cookies not applied
+
+**Cause**: Cookie domain mismatch or expired cookies.
+
+**Fix**: Ensure the cookie `domain` matches the site you're visiting. LinkedIn cookies typically use `.linkedin.com` (note the leading dot for subdomain matching).
+
+### Path traversal error
+
+**Cause**: Attempting to read a file outside `CAMOFOX_COOKIES_DIR`.
+
+**Fix**: Cookie file paths must be relative paths within the cookies directory. No `../` or absolute paths allowed.

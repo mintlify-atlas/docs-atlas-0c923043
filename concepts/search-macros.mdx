@@ -1,0 +1,461 @@
+---
+title: Search macros
+description: Built-in shortcuts for common search engine queries
+---
+
+Search macros are URL shortcuts that expand search queries into full URLs for popular sites. Instead of manually constructing search URLs with proper encoding, use macros like `@google_search` or `@youtube_search`.
+
+## What are search macros?
+
+Macros simplify navigation by handling URL construction and query encoding:
+
+```bash
+# Without macro (manual URL encoding)
+POST /tabs/:tabId/navigate
+{
+  "userId": "agent1",
+  "url": "https://www.google.com/search?q=machine%20learning%20tutorial"
+}
+
+# With macro (automatic encoding)
+POST /tabs/:tabId/navigate
+{
+  "userId": "agent1",
+  "macro": "@google_search",
+  "query": "machine learning tutorial"
+}
+```
+
+Both produce identical results, but macros eliminate manual `encodeURIComponent()` calls and URL structure knowledge.
+
+## Why macros exist
+
+From practical experience building AI browser agents:
+
+1. **Avoid encoding bugs**: LLMs frequently forget to encode special characters (spaces, &, #, etc.)
+2. **Site-specific URL structures**: Each site has different query param names (`q=`, `search_query=`, `keywords=`)
+3. **API format changes**: When Reddit switches from HTML to JSON, only the macro needs updating
+4. **Prompt brevity**: Shorter tool calls = more context for reasoning
+
+<Note>
+Macros are optional - you can always use the `url` parameter directly if you prefer full control.
+</Note>
+
+## Complete macro list
+
+From lib/macros.js:1-16, here are all 14 supported macros:
+
+| Macro | Site | Expands to |
+|-------|------|------------|
+| `@google_search` | Google | `https://www.google.com/search?q=...` |
+| `@youtube_search` | YouTube | `https://www.youtube.com/results?search_query=...` |
+| `@amazon_search` | Amazon | `https://www.amazon.com/s?k=...` |
+| `@reddit_search` | Reddit | `https://www.reddit.com/search.json?q=...&limit=25` |
+| `@reddit_subreddit` | Reddit | `https://www.reddit.com/r/....json?limit=25` |
+| `@wikipedia_search` | Wikipedia | `https://en.wikipedia.org/wiki/Special:Search?search=...` |
+| `@twitter_search` | Twitter/X | `https://twitter.com/search?q=...` |
+| `@yelp_search` | Yelp | `https://www.yelp.com/search?find_desc=...` |
+| `@spotify_search` | Spotify | `https://open.spotify.com/search/...` |
+| `@netflix_search` | Netflix | `https://www.netflix.com/search?q=...` |
+| `@linkedin_search` | LinkedIn | `https://www.linkedin.com/search/results/all/?keywords=...` |
+| `@instagram_search` | Instagram | `https://www.instagram.com/explore/tags/...` |
+| `@tiktok_search` | TikTok | `https://www.tiktok.com/search?q=...` |
+| `@twitch_search` | Twitch | `https://www.twitch.tv/search?term=...` |
+
+## Usage in navigate endpoint
+
+From server.js:872-934, the navigate endpoint accepts both `url` and `macro`:
+
+```bash
+POST /tabs/:tabId/navigate
+{
+  "userId": "agent1",
+  "macro": "@youtube_search",
+  "query": "python tutorial"
+}
+```
+
+**Server-side expansion**:
+```javascript
+let targetUrl = url;
+if (macro) {
+  targetUrl = expandMacro(macro, query) || url;
+}
+if (!targetUrl) throw new Error('url or macro required');
+```
+
+Macro takes precedence - if both `macro` and `url` are provided, macro is used and `url` serves as fallback.
+
+## Real expansion examples
+
+### Google search
+
+Input:
+```json
+{"macro": "@google_search", "query": "best restaurants near me"}
+```
+
+Expands to:
+```
+https://www.google.com/search?q=best%20restaurants%20near%20me
+```
+
+### YouTube search
+
+Input:
+```json
+{"macro": "@youtube_search", "query": "how to bake bread"}
+```
+
+Expands to:
+```
+https://www.youtube.com/results?search_query=how%20to%20bake%20bread
+```
+
+### Amazon search
+
+Input:
+```json
+{"macro": "@amazon_search", "query": "wireless headphones"}
+```
+
+Expands to:
+```
+https://www.amazon.com/s?k=wireless%20headphones
+```
+
+### Wikipedia search
+
+Input:
+```json
+{"macro": "@wikipedia_search", "query": "quantum computing"}
+```
+
+Expands to:
+```
+https://en.wikipedia.org/wiki/Special:Search?search=quantum%20computing
+```
+
+### LinkedIn search
+
+Input:
+```json
+{"macro": "@linkedin_search", "query": "software engineer"}
+```
+
+Expands to:
+```
+https://www.linkedin.com/search/results/all/?keywords=software%20engineer
+```
+
+## Reddit JSON behavior
+
+<Info>
+Reddit macros return **JSON** instead of HTML, enabling direct parsing without snapshot/scraping.
+</Info>
+
+### @reddit_search
+
+From lib/macros.js:5:
+```javascript
+'@reddit_search': (query) => `https://www.reddit.com/search.json?q=${encodeURIComponent(query || '')}&limit=25`
+```
+
+Example:
+```bash
+POST /tabs/:tabId/navigate
+{"userId": "agent1", "macro": "@reddit_search", "query": "best programming languages"}
+
+GET /tabs/:tabId/snapshot?userId=agent1
+```
+
+Returns raw JSON response:
+```json
+{
+  "kind": "Listing",
+  "data": {
+    "children": [
+      {
+        "kind": "t3",
+        "data": {
+          "title": "What's the best programming language to learn in 2024?",
+          "selftext": "I'm a beginner and...",
+          "url": "https://reddit.com/r/learnprogramming/comments/abc123",
+          "score": 456,
+          "num_comments": 89
+        }
+      }
+    ]
+  }
+}
+```
+
+### @reddit_subreddit
+
+From lib/macros.js:6:
+```javascript
+'@reddit_subreddit': (query) => `https://www.reddit.com/r/${encodeURIComponent(query || 'all')}.json?limit=25`
+```
+
+Fetch hot posts from a subreddit:
+```bash
+POST /tabs/:tabId/navigate
+{"userId": "agent1", "macro": "@reddit_subreddit", "query": "programming"}
+```
+
+Expands to:
+```
+https://www.reddit.com/r/programming.json?limit=25
+```
+
+Returns JSON listing of top 25 posts in r/programming.
+
+<Tip>
+Use page.evaluate() to extract specific fields from the JSON instead of parsing the entire snapshot.
+</Tip>
+
+## Implementation details
+
+### Macro expansion function
+
+From lib/macros.js:18-21:
+```javascript
+function expandMacro(macro, query) {
+  const macroFn = MACROS[macro];
+  return macroFn ? macroFn(query) : null;
+}
+```
+
+- Returns `null` if macro doesn't exist (triggers fallback to `url` parameter)
+- Query defaults to empty string if undefined
+- Uses native `encodeURIComponent()` for safety
+
+### Available macros lookup
+
+From lib/macros.js:23-25:
+```javascript
+function getSupportedMacros() {
+  return Object.keys(MACROS);
+}
+```
+
+For programmatic discovery:
+```javascript
+const { getSupportedMacros } = require('./lib/macros');
+console.log(getSupportedMacros());
+// ['@google_search', '@youtube_search', ...]
+```
+
+## Special characters handling
+
+Macros automatically handle special characters:
+
+### Spaces
+
+```bash
+# Query with spaces
+{"macro": "@google_search", "query": "new york weather"}
+# Expands to: ?q=new%20york%20weather
+```
+
+### Ampersands
+
+```bash
+# Query with &
+{"macro": "@amazon_search", "query": "pots & pans"}
+# Expands to: ?k=pots%20%26%20pans
+```
+
+### Unicode
+
+```bash
+# Query with emoji
+{"macro": "@twitter_search", "query": "🔥 trending"}
+# Expands to: ?q=%F0%9F%94%A5%20trending
+```
+
+### Quotes
+
+```bash
+# Query with quotes
+{"macro": "@google_search", "query": '"exact phrase search"'}
+# Expands to: ?q=%22exact%20phrase%20search%22
+```
+
+## Error handling
+
+### Unknown macro
+
+If macro doesn't exist:
+```bash
+POST /tabs/:tabId/navigate
+{
+  "userId": "agent1",
+  "macro": "@nonexistent",
+  "query": "test",
+  "url": "https://google.com"  # Fallback
+}
+```
+
+**Behavior**: Falls back to `url` parameter. If no `url` provided, returns error: "url or macro required".
+
+### Empty query
+
+From lib/macros.js:2:
+```javascript
+'@google_search': (query) => `https://www.google.com/search?q=${encodeURIComponent(query || '')}`
+```
+
+Empty queries are allowed:
+```bash
+{"macro": "@google_search", "query": ""}
+# Expands to: https://www.google.com/search?q=
+```
+
+This navigates to the search homepage.
+
+## Workflow examples
+
+### Multi-site research
+
+```bash
+# 1. Google search
+POST /tabs/:tabId/navigate
+{"userId": "researcher", "macro": "@google_search", "query": "climate change effects"}
+
+GET /tabs/:tabId/snapshot?userId=researcher
+# Parse top result link (e.g., e5)
+
+POST /tabs/:tabId/click
+{"userId": "researcher", "ref": "e5"}
+
+# 2. YouTube search
+POST /tabs/:tabId2/navigate
+{"userId": "researcher", "macro": "@youtube_search", "query": "climate change documentary"}
+
+GET /tabs/:tabId2/snapshot?userId=researcher
+# Get video thumbnails and titles
+
+# 3. Reddit discussion
+POST /tabs/:tabId3/navigate
+{"userId": "researcher", "macro": "@reddit_search", "query": "climate change"}
+
+GET /tabs/:tabId3/snapshot?userId=researcher
+# Parse JSON directly - no need for element refs
+```
+
+### E-commerce price comparison
+
+```bash
+# Search Amazon
+POST /tabs/:tabId1/navigate
+{"userId": "shopper", "macro": "@amazon_search", "query": "coffee maker"}
+
+GET /tabs/:tabId1/snapshot?userId=shopper
+# Extract prices from snapshot
+
+# Search alternative site (no macro - use URL)
+POST /tabs/:tabId2/navigate
+{"userId": "shopper", "url": "https://www.target.com/s?searchTerm=coffee+maker"}
+
+GET /tabs/:tabId2/snapshot?userId=shopper
+# Compare prices
+```
+
+### Social media monitoring
+
+```bash
+# Twitter trending
+POST /tabs/:tabId1/navigate
+{"userId": "monitor", "macro": "@twitter_search", "query": "#AI"}
+
+# Instagram hashtag
+POST /tabs/:tabId2/navigate
+{"userId": "monitor", "macro": "@instagram_search", "query": "AI"}
+
+# TikTok search
+POST /tabs/:tabId3/navigate
+{"userId": "monitor", "macro": "@tiktok_search", "query": "AI tutorial"}
+```
+
+## Adding custom macros
+
+<Warning>
+Custom macros require modifying `lib/macros.js` - there's no runtime registration API.
+</Warning>
+
+To add a new macro:
+
+1. Edit `lib/macros.js`:
+```javascript
+const MACROS = {
+  // ... existing macros ...
+  '@custom_search': (query) => `https://example.com/search?q=${encodeURIComponent(query || '')}`,
+};
+```
+
+2. Restart server:
+```bash
+npm start
+```
+
+3. Use new macro:
+```bash
+POST /tabs/:tabId/navigate
+{"userId": "agent1", "macro": "@custom_search", "query": "test"}
+```
+
+## Performance notes
+
+### Macro expansion cost
+
+Macro expansion is synchronous and lightweight:
+```javascript
+const targetUrl = expandMacro(macro, query);  // ~0.1ms
+```
+
+No measurable performance impact compared to direct URL usage.
+
+### Reddit JSON performance
+
+JSON responses are typically **faster** than HTML:
+- Smaller payload (25 posts ≈ 50KB JSON vs 500KB+ HTML)
+- No need to wait for page hydration
+- Direct parsing without accessibility tree traversal
+
+<Tip>
+For Reddit data extraction, always use `@reddit_search` or `@reddit_subreddit` macros to get JSON directly.
+</Tip>
+
+## Debugging
+
+### See expanded URL
+
+Check server logs for expanded URL:
+```bash
+npm start
+
+# In another terminal
+POST /tabs/:tabId/navigate
+{"userId": "test", "macro": "@google_search", "query": "test"}
+
+# Server logs:
+# {"level":"info","msg":"navigated","tabId":"...","url":"https://www.google.com/search?q=test"}
+```
+
+### List all macros
+
+From AGENTS.md:87-100:
+```markdown
+| Macro | Site |
+|-------|------|
+| `@google_search` | Google |
+| `@youtube_search` | YouTube |
+...
+```
+
+Or programmatically:
+```javascript
+const { getSupportedMacros } = require('./lib/macros');
+console.log(getSupportedMacros());
+```

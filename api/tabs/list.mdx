@@ -1,0 +1,106 @@
+---
+title: List tabs
+description: Get all open tabs for a user session
+---
+
+## GET /tabs
+
+Returns all open browser tabs for the specified user, grouped by session key. Returns an empty array if the user has no active session.
+
+## Authentication
+
+Requires `userId` as a query parameter to identify which user's tabs to list.
+
+## Request
+
+### Query parameters
+
+<ParamField query="userId" type="string" required>
+  User identifier. Returns tabs only for this user's session.
+</ParamField>
+
+## Response
+
+<ResponseField name="running" type="boolean">
+  Always `true` when the server is operational.
+</ResponseField>
+
+<ResponseField name="tabs" type="array">
+  Array of tab objects. Empty if user has no session or no open tabs.
+  
+  <Expandable title="Tab object properties">
+    <ResponseField name="tabId" type="string">
+      UUID identifier for the tab.
+    </ResponseField>
+    
+    <ResponseField name="targetId" type="string">
+      Alias for `tabId` (OpenClaw compatibility).
+    </ResponseField>
+    
+    <ResponseField name="url" type="string">
+      Current URL of the tab.
+    </ResponseField>
+    
+    <ResponseField name="title" type="string">
+      Page title. Empty string if title retrieval fails.
+    </ResponseField>
+    
+    <ResponseField name="listItemId" type="string">
+      Session key (sessionKey) that groups this tab. Used for batch closing via `/tabs/group/:groupId`.
+    </ResponseField>
+  </Expandable>
+</ResponseField>
+
+## Example
+
+```bash
+curl http://localhost:9377/tabs?userId=agent1
+```
+
+**Response:**
+
+```json
+{
+  "running": true,
+  "tabs": [
+    {
+      "targetId": "f47ac10b-58cc-4372-a567-0e02b2c3d479",
+      "tabId": "f47ac10b-58cc-4372-a567-0e02b2c3d479",
+      "url": "https://example.com",
+      "title": "Example Domain",
+      "listItemId": "task123"
+    },
+    {
+      "targetId": "8b3d5e7a-9c2f-4a6b-b8e1-3f5a7c9d1e2b",
+      "tabId": "8b3d5e7a-9c2f-4a6b-b8e1-3f5a7c9d1e2b",
+      "url": "https://google.com",
+      "title": "Google",
+      "listItemId": "task456"
+    }
+  ]
+}
+```
+
+**No active session:**
+
+```json
+{
+  "running": true,
+  "tabs": []
+}
+```
+
+## Error responses
+
+| Status | Error | Cause |
+|--------|-------|-------|
+| 500 | Internal server error | Tab state retrieval failure |
+
+## Notes
+
+- Returns tabs across all session keys for the specified user
+- Does not require an active session - returns empty array if user has no tabs
+- Tab titles are fetched asynchronously and may be empty if the page hasn't loaded
+- The `targetId` field is included for compatibility with OpenClaw's browser tool
+- Maximum tabs per session: 10 (configurable via `MAX_TABS_PER_SESSION`)
+- Global maximum across all users: 100 tabs (configurable via `MAX_TABS_GLOBAL`)

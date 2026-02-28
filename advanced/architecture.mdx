@@ -1,0 +1,481 @@
+---
+title: Architecture
+description: Internal architecture, session hierarchy, lazy browser launch, memory footprint, and OpenClaw scanner isolation
+---
+
+Camofox Browser is built as a stateful REST API that manages a single Camoufox browser instance with isolated user sessions.
+
+## Session hierarchy
+
+The server organizes browser state in a four-level hierarchy:
+
+```
+Browser Instance (Camoufox)
+└── User Session (BrowserContext) - isolated cookies/storage
+    ├── Tab Group (sessionKey: "conv1")
+    │   ├── Tab (google.com)
+    │   └── Tab (github.com)
+    └── Tab Group (sessionKey: "conv2")
+        └── Tab (amazon.com)
+```
+
+### Browser instance
+
+A single Camoufox browser process runs per server instance. The browser:
+
+- Launches **lazily** on first request (no browser on startup)
+- Shuts down after **5 minutes idle** with no active sessions (configurable via `BROWSER_IDLE_TIMEOUT_MS`)
+- Relaunches automatically on next request
+- Uses **~40MB memory** when idle (no tabs open)
+
+<Info>
+Lazy launch + idle shutdown allows Camofox to share infrastructure with the rest of your stack. You can run it on a Raspberry Pi, $5 VPS, or shared Railway/Fly.io instance without dedicated resources.
+</Info>
+
+### User session (BrowserContext)
+
+Each `userId` gets an isolated Playwright `BrowserContext`:
+
+- **Separate cookies** (one user can be logged into LinkedIn, another cannot see those cookies)
+- **Separate localStorage/sessionStorage**
+- **Separate cache**
+- Sessions timeout after **30 minutes of inactivity** (configurable via `SESSION_TIMEOUT_MS`)
+- Maximum concurrent sessions: `MAX_SESSIONS` (default 50)
+
+```javascript
+// From server.js:446
+const context = await b.newContext({
+  viewport: { width: 1280, height: 720 },
+  permissions: ['geolocation'],
+  locale: 'en-US',
+  timezoneId: 'America/Los_Angeles',
+  geolocation: { latitude: 37.7749, longitude: -122.4194 }
+});
+```
+
+<Note>
+When a proxy is configured, Camoufox's GeoIP automatically overrides `locale`, `timezoneId`, and `geolocation` to match the proxy's exit IP.
+</Note>
+
+### Tab group (sessionKey)
+
+Within a session, tabs are grouped by `sessionKey` (or legacy `listItemId`):
+
+- Used for conversational context ("task1", "research_job")
+- Agents can organize tabs by task or conversation thread
+- Delete entire groups with `DELETE /tabs/group/:sessionKey`
+
+### Tab
+
+Each tab is a Playwright `Page` with:
+
+- Unique `tabId` (UUID)
+- Element refs map (`e1`, `e2`, etc.)
+- Visited URLs set
+- Tool call counter (for LRU recycling)
+- Last snapshot cache (for offset pagination)
+
+```javascript
+// From server.js:473
+function createTabState(page) {
+  return {
+    page,
+    refs: new Map(),
+    visitedUrls: new Set(),
+    toolCalls: 0,
+    lastSnapshot: null,
+  };
+}
+```
+
+## Lazy browser launch
+
+The browser does not start on server launch. Instead:
+
+1. Server starts instantly (no Camoufox launch delay)
+2. First request triggers `ensureBrowser()` (server.js:399)
+3. Browser launches in ~2-5 seconds
+4. Subsequent requests reuse the running browser
+
+```javascript
+// From server.js:379
+async function launchBrowserInstance() {
+  const hostOS = getHostOS();
+  const proxy = buildProxyConfig();
+  
+  log('info', 'launching camoufox', { hostOS, geoip: !!proxy });
+  
+  const options = await launchOptions({
+    headless: true,
+    os: hostOS,
+    humanize: true,
+    enable_cache: true,
+    proxy: proxy,
+    geoip: !!proxy,
+  });
+  
+  browser = await firefox.launch(options);
+  log('info', 'camoufox launched');
+  return browser;
+}
+```
+
+### Idle shutdown
+
+When the last session closes, a 5-minute timer starts:
+
+```javascript
+// From server.js:305
+function scheduleBrowserIdleShutdown() {
+  clearBrowserIdleTimer();
+  if (sessions.size === 0 && browser) {
+    browserIdleTimer = setTimeout(async () => {
+      if (sessions.size === 0 && browser) {
+        log('info', 'browser idle shutdown (no sessions)');
+        const b = browser;
+        browser = null;
+        await b.close().catch(() => {});
+      }
+    }, BROWSER_IDLE_TIMEOUT_MS);
+  }
+}
+```
+
+If a new request arrives before timeout, the timer is cleared and the browser stays running.
+
+<Warning>
+Set `BROWSER_IDLE_TIMEOUT_MS=0` to disable idle shutdown. Useful for high-traffic deployments where you want the browser always ready.
+</Warning>
+
+## Memory footprint
+
+| State | Memory Usage | Notes |
+|-------|--------------|-------|
+| Server only (no browser) | ~50MB | Node.js + Express |
+| Browser idle (no tabs) | ~40MB | Camoufox process idle |
+| Browser + 1 tab | ~150-200MB | Depends on page complexity |
+| Browser + 10 tabs | ~500-800MB | Varies by site (Google is light, SPAs are heavy) |
+
+<Info>
+The `MAX_OLD_SPACE_SIZE` variable controls Node.js V8 heap (default 128MB). Increase to 512MB or 1GB for high-concurrency deployments.
+</Info>
+
+## Session isolation model
+
+Each `userId` has a completely isolated browser context:
+
+```
+User: agent1
+  Context: { cookies: [...], localStorage: {...} }
+  Tab: google.com (logged in as user@example.com)
+  Tab: github.com (logged in as devuser)
+
+User: agent2
+  Context: { cookies: [], localStorage: {} }
+  Tab: google.com (NOT logged in)
+```
+
+Cookie import (`POST /sessions/:userId/cookies`) only affects that user's context. Other users cannot access those cookies.
+
+### Security implications
+
+- **Multi-tenant safe**: One user cannot steal another's session
+- **Cookie import is disabled by default** (requires `CAMOFOX_API_KEY`)
+- **Bearer token authentication** for cookie import endpoint
+- **Path traversal protection** for cookie file reads
+- **Max 500 cookies per request** (prevents DoS)
+- **Sanitized cookie fields** (removes unknown Playwright fields)
+
+## File structure
+
+From `AGENTS.md`:
+
+```
+camofox-browser/
+├── server.js              # Camoufox engine (routes + browser logic ONLY)
+├── lib/
+│   ├── config.js          # ALL process.env reads (isolated from network)
+│   ├── youtube.js         # YouTube transcript (child_process isolated here)
+│   ├── launcher.js        # Subprocess spawning (child_process isolated here)
+│   ├── cookies.js         # Cookie file I/O
+│   ├── snapshot.js        # Accessibility tree snapshot
+│   └── macros.js          # Search macro URL expansion
+├── Dockerfile             # Production container
+└── test/                  # E2E tests
+```
+
+### Module responsibilities
+
+| File | Responsibility | Critical Constraints |
+|------|----------------|---------------------|
+| `server.js` | Express routes, browser lifecycle, page interaction | **NO** `process.env` reads, **NO** `child_process` imports |
+| `lib/config.js` | All environment variable reads | **NO** network calls (`app.post`, `fetch`, etc.) |
+| `lib/youtube.js` | YouTube transcript via yt-dlp subprocess | **NO** network calls (subprocess isolated from Express routes) |
+| `lib/launcher.js` | Server subprocess management | **NO** network calls |
+
+## OpenClaw scanner isolation
+
+OpenClaw's skill-scanner flags plugins that show potential credential exfiltration patterns:
+
+- `process.env` + network calls (`app.post`, `fetch`, `http.request`) in same file
+- `child_process` + network calls in same file
+
+These patterns suggest a plugin reading secrets from environment and sending them over the network.
+
+### Isolation rules
+
+<Warning>
+**CRITICAL**: No single `.js` file may contain both halves of a scanner rule pair.
+</Warning>
+
+1. **`process.env` lives ONLY in `lib/config.js`**
+   - All environment variable reads centralized
+   - `server.js` imports the config object (no direct `process.env` access)
+
+2. **`child_process` / `execFile` / `spawn` live ONLY in `lib/youtube.js` and `lib/launcher.js`**
+   - YouTube transcript spawns `yt-dlp` subprocess
+   - Launcher spawns server subprocess for OpenClaw plugin
+   - Both isolated from Express routes
+
+3. **`server.js` has Express routes but ZERO `process.env` reads and ZERO `child_process` imports**
+   - All network logic in one file
+   - No env or subprocess access
+
+### Example violation (BROKEN)
+
+```javascript
+// server.js (BROKEN - causes scanner flag)
+const { execFile } = require('child_process');  // ❌
+
+app.post('/youtube/transcript', async (req, res) => {  // ❌
+  // child_process + network (app.post) in same file!
+  execFile('yt-dlp', [url], (err, stdout) => {
+    res.json({ transcript: stdout });
+  });
+});
+```
+
+### Example fix (CORRECT)
+
+```javascript
+// lib/youtube.js (subprocess isolated)
+const { execFile } = require('child_process');  // ✅
+
+function ytDlpTranscript(url) {
+  return new Promise((resolve, reject) => {
+    execFile('yt-dlp', [url], (err, stdout) => {
+      if (err) reject(err);
+      else resolve(stdout);
+    });
+  });
+}
+
+module.exports = { ytDlpTranscript };
+```
+
+```javascript
+// server.js (network isolated)
+const { ytDlpTranscript } = require('./lib/youtube');  // ✅
+
+app.post('/youtube/transcript', async (req, res) => {  // ✅
+  const result = await ytDlpTranscript(req.body.url);
+  res.json(result);
+});
+```
+
+Now `server.js` has no `child_process` import, and `lib/youtube.js` has no network calls.
+
+### Why this matters
+
+This was broken in v1.3.0 when YouTube transcript was added directly to `server.js`, causing OpenClaw's scanner to flag the plugin. Fixed in v1.3.1 by moving subprocess logic to `lib/youtube.js`.
+
+<Info>
+When adding new features that need env vars or subprocesses, put that code in a `lib/` module and import the result into `server.js`.
+</Info>
+
+## Structured logging
+
+All logs are JSON (one object per line) for easy parsing by log aggregators:
+
+```json
+{"ts":"2026-02-28T10:00:00.000Z","level":"info","msg":"req","reqId":"a1b2c3d4","method":"POST","path":"/tabs","userId":"agent1"}
+{"ts":"2026-02-28T10:00:00.333Z","level":"info","msg":"res","reqId":"a1b2c3d4","status":200,"ms":333}
+{"ts":"2026-02-28T10:00:01.000Z","level":"error","msg":"click failed","reqId":"a1b2c3d4","error":"Unknown ref: e99"}
+```
+
+### Log fields
+
+| Field | Description | Example |
+|-------|-------------|----------|
+| `ts` | ISO 8601 timestamp | `2026-02-28T10:00:00.000Z` |
+| `level` | Log level (`info`, `warn`, `error`) | `info` |
+| `msg` | Log message | `req`, `res`, `tab created` |
+| `reqId` | Request ID (8-char UUID) | `a1b2c3d4` |
+| `method` | HTTP method | `POST` |
+| `path` | Request path | `/tabs` |
+| `userId` | User ID from request | `agent1` |
+| `status` | HTTP status code | `200` |
+| `ms` | Request duration (milliseconds) | `333` |
+| `error` | Error message | `Unknown ref: e99` |
+| `stack` | Error stack trace (production only in stderr) | `Error: ...` |
+
+### Filtering logs
+
+```bash
+# Show only errors
+npm start | jq 'select(.level == "error")'
+
+# Show requests slower than 1 second
+npm start | jq 'select(.ms > 1000)'
+
+# Show all navigation events
+npm start | jq 'select(.msg == "navigated")'
+
+# Track a specific user
+npm start | jq 'select(.userId == "agent1")'
+```
+
+<Note>
+Health check requests (`/health`) are excluded from request logging to reduce noise.
+</Note>
+
+## Browser health tracking
+
+The server monitors browser health and automatically restarts after consecutive failures:
+
+```javascript
+// From server.js:326
+const healthState = {
+  consecutiveNavFailures: 0,
+  lastSuccessfulNav: Date.now(),
+  isRecovering: false,
+  activeOps: 0,
+};
+```
+
+After **3 consecutive navigation failures**, the server:
+
+1. Closes all sessions
+2. Kills the browser process
+3. Relaunches Camoufox
+4. Resets failure counter
+
+```javascript
+// From server.js:344
+async function restartBrowser(reason) {
+  if (healthState.isRecovering) return;
+  healthState.isRecovering = true;
+  log('error', 'restarting browser', { reason, failures: healthState.consecutiveNavFailures });
+  try {
+    for (const [, session] of sessions) {
+      await session.context.close().catch(() => {});
+    }
+    sessions.clear();
+    if (browser) {
+      await browser.close().catch(() => {});
+      browser = null;
+    }
+    browserLaunchPromise = null;
+    await ensureBrowser();
+    healthState.consecutiveNavFailures = 0;
+    healthState.lastSuccessfulNav = Date.now();
+    log('info', 'browser restarted successfully');
+  } catch (err) {
+    log('error', 'browser restart failed', { error: err.message });
+  } finally {
+    healthState.isRecovering = false;
+  }
+}
+```
+
+This makes the server self-healing for transient browser crashes.
+
+## Concurrency control
+
+The server enforces per-user concurrency limits to prevent resource exhaustion:
+
+```javascript
+// From server.js:233
+async function withUserLimit(userId, operation) {
+  const key = normalizeUserId(userId);
+  let state = userConcurrency.get(key);
+  if (!state) {
+    state = { active: 0, queue: [] };
+    userConcurrency.set(key, state);
+  }
+  if (state.active >= MAX_CONCURRENT_PER_USER) {
+    await new Promise((resolve, reject) => {
+      const timer = setTimeout(() => reject(new Error('User concurrency limit reached, try again')), 30000);
+      state.queue.push(() => { clearTimeout(timer); resolve(); });
+    });
+  }
+  state.active++;
+  // ... execute operation ...
+  state.active--;
+}
+```
+
+Default: **3 concurrent requests per user**. Requests beyond this limit queue for up to 30 seconds.
+
+### Tab locks
+
+Operations on the same tab are serialized to prevent race conditions:
+
+```javascript
+// From server.js:193
+async function withTabLock(tabId, operation) {
+  const pending = tabLocks.get(tabId);
+  if (pending) {
+    await Promise.race([
+      pending,
+      new Promise((_, reject) => setTimeout(() => reject(new Error('Tab lock timeout')), TAB_LOCK_TIMEOUT_MS))
+    ]);
+  }
+  
+  const promise = operation();
+  tabLocks.set(tabId, promise);
+  
+  try {
+    return await promise;
+  } finally {
+    if (tabLocks.get(tabId) === promise) {
+      tabLocks.delete(tabId);
+    }
+  }
+}
+```
+
+This prevents issues like:
+- Clicking while navigation is in progress
+- Building refs while page is still loading
+- Concurrent clicks on same element
+
+## Host OS detection
+
+Camoufox generates fingerprints matching the host OS:
+
+```javascript
+// From server.js:278
+function getHostOS() {
+  const platform = os.platform();
+  if (platform === 'darwin') return 'macos';
+  if (platform === 'win32') return 'windows';
+  return 'linux';
+}
+```
+
+This ensures `navigator.platform`, `navigator.userAgent`, and WebGL renderer strings match the actual OS, reducing detection risk.
+
+## Production checklist
+
+Before deploying:
+
+- [ ] Set `NODE_ENV=production` (hides detailed errors)
+- [ ] Generate `CAMOFOX_API_KEY` if using cookie import
+- [ ] Configure `MAX_SESSIONS` based on expected load
+- [ ] Set `BROWSER_IDLE_TIMEOUT_MS=0` for high-traffic deployments
+- [ ] Increase `MAX_OLD_SPACE_SIZE` to 512MB+ for concurrency
+- [ ] Configure proxy if using residential IPs
+- [ ] Set up log aggregation (JSON logs are machine-readable)
+- [ ] Monitor `/health` endpoint (returns 503 during browser recovery)
+- [ ] Set session timeout based on use case (`SESSION_TIMEOUT_MS`)

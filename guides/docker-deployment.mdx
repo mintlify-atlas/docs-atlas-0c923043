@@ -1,0 +1,506 @@
+---
+title: Docker deployment
+description: Deploy Camofox Browser in Docker containers with support for Fly.io, Railway, and custom cloud providers
+---
+
+Camofox ships with a production-ready Dockerfile that pre-bakes the Camoufox browser binary and all dependencies into the image. This eliminates first-run downloads and ensures consistent builds.
+
+## Quick start
+
+### Build the image
+
+```bash
+cd camofox-browser
+docker build -t camofox-browser .
+```
+
+The build process:
+
+1. Installs Firefox dependencies (GTK, DBus, ALSA, X11 libs)
+2. Installs fonts (Liberation, Noto Color Emoji)
+3. Downloads and installs yt-dlp for fast YouTube transcripts
+4. Pre-downloads the pinned Camoufox browser binary (~300MB)
+5. Installs Node.js dependencies
+6. Copies server code
+
+<Note>
+Build time is ~5 minutes on first run. Subsequent builds are faster due to layer caching.
+</Note>
+
+### Run the container
+
+```bash
+docker run -p 9377:3000 camofox-browser
+```
+
+<Warning>
+The container exposes port **3000** internally (set by `CAMOFOX_PORT=3000` in the Dockerfile), but you map it to host port **9377** for consistency with the standalone server's default port.
+</Warning>
+
+Access the server at `http://localhost:9377`.
+
+### Test the deployment
+
+```bash
+curl http://localhost:9377/health
+```
+
+Expected response:
+
+```json
+{
+  "ok": true,
+  "engine": "camoufox",
+  "browserConnected": false,
+  "browserRunning": false,
+  "activeTabs": 0,
+  "consecutiveFailures": 0
+}
+```
+
+`browserConnected: false` is normal - the browser launches lazily on first request.
+
+## Dockerfile overview
+
+The Dockerfile is optimized for production use:
+
+```dockerfile
+FROM node:20-slim
+
+# Pinned Camoufox version for reproducible builds
+ARG CAMOUFOX_VERSION=135.0.1
+ARG CAMOUFOX_RELEASE=beta.24
+ARG CAMOUFOX_URL=https://github.com/daijro/camoufox/releases/download/v${CAMOUFOX_VERSION}-${CAMOUFOX_RELEASE}/camoufox-${CAMOUFOX_VERSION}-${CAMOUFOX_RELEASE}-lin.x86_64.zip
+
+# Install Firefox dependencies + fonts + utils
+RUN apt-get update && apt-get install -y \
+    libgtk-3-0 libdbus-glib-1-2 libxt6 libasound2 \
+    libx11-xcb1 libxcomposite1 libxcursor1 libxdamage1 \
+    libxfixes3 libxi6 libxrandr2 libxrender1 libxss1 libxtst6 \
+    fonts-liberation fonts-noto-color-emoji fontconfig \
+    ca-certificates curl unzip python3-minimal \
+    && rm -rf /var/lib/apt/lists/*
+
+# Install yt-dlp for YouTube transcript extraction
+RUN curl -L https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp -o /usr/local/bin/yt-dlp \
+    && chmod +x /usr/local/bin/yt-dlp
+
+# Pre-bake Camoufox browser binary into image
+RUN mkdir -p /root/.cache/camoufox \
+    && curl -L -o /tmp/camoufox.zip "${CAMOUFOX_URL}" \
+    && (unzip -q /tmp/camoufox.zip -d /root/.cache/camoufox || true) \
+    && rm /tmp/camoufox.zip \
+    && chmod -R 755 /root/.cache/camoufox \
+    && echo "{\"version\":\"${CAMOUFOX_VERSION}\",\"release\":\"${CAMOUFOX_RELEASE}\"}" > /root/.cache/camoufox/version.json \
+    && test -f /root/.cache/camoufox/camoufox-bin && echo "Camoufox installed successfully"
+
+WORKDIR /app
+
+COPY package.json ./
+RUN npm install --production
+
+COPY server.js ./
+COPY lib/ ./lib/
+
+ENV NODE_ENV=production
+ENV CAMOFOX_PORT=3000
+
+EXPOSE 3000
+
+CMD ["sh", "-c", "node --max-old-space-size=${MAX_OLD_SPACE_SIZE:-128} server.js"]
+```
+
+Key features:
+
+- **Pinned Camoufox version** via build args (update `CAMOUFOX_VERSION` to upgrade)
+- **Pre-baked browser binary** eliminates first-run download
+- **Production npm install** skips dev dependencies
+- **128MB V8 heap limit** keeps memory usage low (override with `MAX_OLD_SPACE_SIZE`)
+
+## Environment variables
+
+Pass environment variables with `-e` flags:
+
+```bash
+docker run -p 9377:3000 \
+  -e CAMOFOX_API_KEY="your-secret-key" \
+  -e MAX_SESSIONS=20 \
+  -e SESSION_TIMEOUT_MS=1800000 \
+  -e MAX_OLD_SPACE_SIZE=256 \
+  camofox-browser
+```
+
+### Common variables
+
+| Variable | Description | Default |
+|----------|-------------|--------|
+| `CAMOFOX_API_KEY` | API key for cookie import | - |
+| `CAMOFOX_PORT` | Server port (internal) | `3000` |
+| `MAX_SESSIONS` | Max concurrent browser sessions | `50` |
+| `MAX_TABS_PER_SESSION` | Max tabs per session | `10` |
+| `SESSION_TIMEOUT_MS` | Session inactivity timeout | `1800000` (30min) |
+| `BROWSER_IDLE_TIMEOUT_MS` | Kill browser when idle | `300000` (5min) |
+| `MAX_OLD_SPACE_SIZE` | Node.js V8 heap limit (MB) | `128` |
+| `PROXY_HOST` | Proxy hostname or IP | - |
+| `PROXY_PORT` | Proxy port | - |
+| `PROXY_USERNAME` | Proxy auth username | - |
+| `PROXY_PASSWORD` | Proxy auth password | - |
+
+See the [environment variables reference](/advanced/environment-variables) for all options.
+
+## Volume mounts
+
+### Cookie files
+
+To use cookie import, mount the cookies directory:
+
+```bash
+docker run -p 9377:3000 \
+  -e CAMOFOX_API_KEY="your-key" \
+  -v ~/.camofox/cookies:/root/.camofox/cookies:ro \
+  camofox-browser
+```
+
+The `:ro` flag makes the mount read-only for security.
+
+<Tip>
+For production, use Docker secrets or a secrets manager instead of mounting files directly.
+</Tip>
+
+### Persistent cache (optional)
+
+Camofox caches browser data in `/root/.cache/camoufox`. This is baked into the image, but you can override it:
+
+```bash
+docker run -p 9377:3000 \
+  -v camofox-cache:/root/.cache/camoufox \
+  camofox-browser
+```
+
+This is rarely needed - the default image cache is sufficient.
+
+## Memory limits
+
+Set Docker memory limits to prevent OOM kills:
+
+```bash
+docker run -p 9377:3000 \
+  --memory=512m \
+  --memory-swap=512m \
+  camofox-browser
+```
+
+**Recommended limits:**
+
+- **Idle**: 50-100MB
+- **1 tab open**: 200-300MB
+- **5 tabs open**: 400-600MB
+- **10 tabs open**: 800MB-1GB
+
+The browser shuts down after 5 minutes of inactivity to conserve memory.
+
+## CPU limits
+
+Limit CPU usage to prevent resource exhaustion on shared hosts:
+
+```bash
+docker run -p 9377:3000 \
+  --cpus=1.0 \
+  camofox-browser
+```
+
+This caps the container at 1 CPU core.
+
+## Fly.io deployment
+
+Fly.io is a global edge platform for running Docker containers.
+
+### Setup
+
+<Steps>
+
+<Step title="Install flyctl">
+
+```bash
+curl -L https://fly.io/install.sh | sh
+```
+
+</Step>
+
+<Step title="Login to Fly.io">
+
+```bash
+fly auth login
+```
+
+</Step>
+
+<Step title="Create app">
+
+In the `camofox-browser` directory:
+
+```bash
+fly launch
+```
+
+Choose a name and region. Fly will detect the Dockerfile and create `fly.toml`.
+
+</Step>
+
+<Step title="Set secrets">
+
+```bash
+fly secrets set CAMOFOX_API_KEY="your-secret-key"
+```
+
+</Step>
+
+<Step title="Deploy">
+
+```bash
+fly deploy
+```
+
+The app will build and deploy. Access it at `https://your-app.fly.dev`.
+
+</Step>
+
+</Steps>
+
+### fly.toml configuration
+
+The included `fly.toml` is pre-configured:
+
+```toml
+app = "camofox-browser"
+
+[build]
+  dockerfile = "Dockerfile"
+
+[env]
+  NODE_ENV = "production"
+  CAMOFOX_PORT = "3000"
+
+[[services]]
+  internal_port = 3000
+  protocol = "tcp"
+
+  [[services.ports]]
+    handlers = ["http"]
+    port = 80
+
+  [[services.ports]]
+    handlers = ["tls", "http"]
+    port = 443
+
+[http_service]
+  internal_port = 3000
+  force_https = true
+  auto_stop_machines = true
+  auto_start_machines = true
+  min_machines_running = 0
+```
+
+Key settings:
+
+- **auto_stop_machines**: Shuts down when idle (saves costs)
+- **auto_start_machines**: Wakes on incoming request
+- **min_machines_running = 0**: Scales to zero when unused
+
+### Scaling on Fly.io
+
+Scale horizontally:
+
+```bash
+fly scale count 3
+```
+
+Scale vertically (more RAM):
+
+```bash
+fly scale vm shared-cpu-1x --memory 512
+```
+
+## Railway deployment
+
+Railway is a platform-as-a-service with GitHub integration.
+
+### Setup
+
+<Steps>
+
+<Step title="Connect GitHub repo">
+
+1. Go to [railway.app](https://railway.app)
+2. Click "New Project" → "Deploy from GitHub repo"
+3. Select your `camofox-browser` fork
+
+</Step>
+
+<Step title="Configure variables">
+
+In the Railway dashboard:
+
+1. Go to your service → Variables
+2. Add:
+   - `CAMOFOX_API_KEY` = `your-secret-key`
+   - `CAMOFOX_PORT` = `3000`
+   - `MAX_SESSIONS` = `20`
+
+</Step>
+
+<Step title="Deploy">
+
+Railway auto-detects the Dockerfile and deploys. Access your app at the generated URL.
+
+</Step>
+
+</Steps>
+
+### railway.toml configuration
+
+The included `railway.toml` configures the build:
+
+```toml
+[build]
+  builder = "dockerfile"
+  dockerfilePath = "Dockerfile"
+
+[deploy]
+  startCommand = "node --max-old-space-size=${MAX_OLD_SPACE_SIZE:-128} server.js"
+  healthcheckPath = "/health"
+  healthcheckTimeout = 30
+```
+
+## Custom cloud providers
+
+### Google Cloud Run
+
+```bash
+# Build and push to GCR
+docker build -t gcr.io/YOUR_PROJECT/camofox-browser .
+docker push gcr.io/YOUR_PROJECT/camofox-browser
+
+# Deploy
+gcloud run deploy camofox-browser \
+  --image gcr.io/YOUR_PROJECT/camofox-browser \
+  --platform managed \
+  --region us-central1 \
+  --memory 1Gi \
+  --cpu 1 \
+  --port 3000 \
+  --set-env-vars CAMOFOX_API_KEY=your-key
+```
+
+### AWS ECS / Fargate
+
+1. Push image to ECR:
+
+```bash
+aws ecr create-repository --repository-name camofox-browser
+docker tag camofox-browser:latest YOUR_ECR_URI/camofox-browser:latest
+docker push YOUR_ECR_URI/camofox-browser:latest
+```
+
+2. Create task definition with environment variables
+3. Create service in ECS cluster
+
+### Azure Container Instances
+
+```bash
+az container create \
+  --resource-group myResourceGroup \
+  --name camofox-browser \
+  --image YOUR_REGISTRY/camofox-browser:latest \
+  --cpu 1 --memory 1 \
+  --ports 3000 \
+  --environment-variables CAMOFOX_API_KEY=your-key
+```
+
+## Health checks
+
+All platforms should configure health checks:
+
+**Endpoint**: `GET /health`
+
+**Expected response**: `200 OK`
+
+```json
+{"ok": true, "engine": "camoufox"}
+```
+
+**Recommended settings**:
+
+- **Interval**: 30 seconds
+- **Timeout**: 10 seconds
+- **Unhealthy threshold**: 3 consecutive failures
+
+## Logging
+
+Camofox outputs structured JSON logs to stdout:
+
+```json
+{"ts":"2026-02-28T10:00:00.000Z","level":"info","msg":"req","reqId":"a1b2c3d4","method":"POST","path":"/tabs","userId":"agent1"}
+{"ts":"2026-02-28T10:00:01.234Z","level":"info","msg":"res","reqId":"a1b2c3d4","status":200,"ms":1234}
+```
+
+View logs with:
+
+```bash
+# Docker
+docker logs <container-id>
+
+# Fly.io
+fly logs
+
+# Railway
+# View in dashboard
+```
+
+## Troubleshooting
+
+### Container fails to start
+
+**Symptoms**: Container exits immediately
+
+**Check logs**:
+
+```bash
+docker logs <container-id>
+```
+
+**Common causes**:
+
+- Missing dependencies (check Dockerfile)
+- Port conflict (change host port: `-p 9378:3000`)
+- Memory limit too low (increase to 512MB minimum)
+
+### Browser launch timeout
+
+**Symptoms**: Requests fail with "Browser launch timeout (30s)"
+
+**Causes**:
+
+- Insufficient memory (increase `--memory`)
+- Insufficient CPU (increase `--cpus`)
+- Missing system libraries
+
+**Fix**: Increase container resources or rebuild the image to verify dependencies.
+
+### Out of memory (OOM)
+
+**Symptoms**: Container killed by OOM killer
+
+**Causes**:
+
+- Too many concurrent sessions
+- Memory limit too low
+
+**Fix**:
+
+```bash
+docker run -p 9377:3000 \
+  --memory=1g \
+  -e MAX_SESSIONS=10 \
+  camofox-browser
+```

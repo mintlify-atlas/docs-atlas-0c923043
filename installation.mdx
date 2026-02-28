@@ -1,0 +1,614 @@
+---
+title: Installation
+description: Install Camofox Browser via npm, Docker, cloud deployment, or OpenClaw plugin
+---
+
+## Prerequisites
+
+<CardGroup cols={2}>
+  <Card title="Node.js 18+" icon="node-js">
+    Required for standalone and plugin installation
+  </Card>
+  
+  <Card title="~500MB disk space" icon="hard-drive">
+    For Camoufox browser engine (downloads on first run)
+  </Card>
+  
+  <Card title="Linux/macOS/Windows" icon="desktop">
+    Runs on all major operating systems
+  </Card>
+  
+  <Card title="2GB RAM minimum" icon="memory">
+    Recommended 4GB+ for multiple concurrent sessions
+  </Card>
+</CardGroup>
+
+## Installation options
+
+<Tabs>
+  <Tab title="npm Package">
+    ### Install from npm
+    
+    <CodeGroup>
+    ```bash npm
+    npm install @askjo/camofox-browser
+    ```
+    
+    ```bash yarn
+    yarn add @askjo/camofox-browser
+    ```
+    
+    ```bash pnpm
+    pnpm add @askjo/camofox-browser
+    ```
+    </CodeGroup>
+    
+    ### Start the server
+    
+    ```bash
+    npx camofox-browser
+    # Or if installed globally:
+    npm install -g @askjo/camofox-browser
+    camofox-browser
+    ```
+    
+    <Info>
+      On first run, Camoufox will automatically download the browser engine (~300MB). This is cached locally at `~/.config/camoufox/`.
+    </Info>
+    
+    ### Verify installation
+    
+    ```bash
+    curl http://localhost:9377/health
+    ```
+    
+    You should see:
+    
+    ```json
+    {"ok": true, "engine": "camoufox", "browserConnected": false, "activeTabs": 0}
+    ```
+  </Tab>
+  
+  <Tab title="Standalone">
+    ### Clone from GitHub
+    
+    ```bash
+    git clone https://github.com/jo-inc/camofox-browser
+    cd camofox-browser
+    ```
+    
+    ### Install dependencies
+    
+    <CodeGroup>
+    ```bash npm
+    npm install
+    ```
+    
+    ```bash yarn
+    yarn install
+    ```
+    
+    ```bash pnpm
+    pnpm install
+    ```
+    </CodeGroup>
+    
+    ### Start the server
+    
+    ```bash
+    npm start
+    ```
+    
+    Or use the shell script:
+    
+    ```bash
+    ./run.sh
+    ```
+    
+    <Note>
+      The server listens on port **9377** by default. Change with `CAMOFOX_PORT=8080 npm start`.
+    </Note>
+    
+    ### First-run behavior
+    
+    When you start the server for the first time:
+    
+    1. **Camoufox downloads automatically** (~300MB, takes 1-2 minutes)
+    2. Browser engine is cached at `~/.config/camoufox/`
+    3. Server starts and listens on port 9377
+    4. Browser launches lazily on first tab creation
+    
+    <Info>
+      The `postinstall` script runs `npx camoufox-js fetch` to pre-download the browser. If this fails, don't worry - the download happens on first server start.
+    </Info>
+  </Tab>
+  
+  <Tab title="Docker">
+    ### Build the image
+    
+    ```bash
+    docker build -t camofox-browser .
+    ```
+    
+    ### Run the container
+    
+    ```bash
+    docker run -p 9377:9377 camofox-browser
+    ```
+    
+    The server is now accessible at `http://localhost:9377`.
+    
+    ### With environment variables
+    
+    ```bash
+    docker run -p 9377:9377 \
+      -e MAX_SESSIONS=100 \
+      -e SESSION_TIMEOUT_MS=3600000 \
+      -e BROWSER_IDLE_TIMEOUT_MS=600000 \
+      camofox-browser
+    ```
+    
+    ### With proxy support
+    
+    ```bash
+    docker run -p 9377:9377 \
+      -e PROXY_HOST=166.88.179.132 \
+      -e PROXY_PORT=46040 \
+      -e PROXY_USERNAME=myuser \
+      -e PROXY_PASSWORD=mypass \
+      camofox-browser
+    ```
+    
+    <Warning>
+      The Docker image includes yt-dlp for fast YouTube transcript extraction. Without Docker, you need to install yt-dlp separately: `pip install yt-dlp` or `brew install yt-dlp`.
+    </Warning>
+    
+    ### Mount cookie directory
+    
+    To use cookie import with Docker:
+    
+    ```bash
+    docker run -p 9377:9377 \
+      -e CAMOFOX_API_KEY="your-secret-key" \
+      -v ~/.camofox/cookies:/home/node/.camofox/cookies:ro \
+      camofox-browser
+    ```
+    
+    See [Cookie Import](/guides/cookie-import) for details.
+  </Tab>
+  
+  <Tab title="Cloud Deployment">
+    ### Fly.io
+    
+    A `fly.toml` is included in the repository.
+    
+    ```bash
+    fly deploy
+    ```
+    
+    Set secrets for sensitive config:
+    
+    ```bash
+    fly secrets set CAMOFOX_API_KEY="your-secret-key"
+    fly secrets set PROXY_HOST="166.88.179.132"
+    fly secrets set PROXY_PORT="46040"
+    ```
+    
+    ### Railway
+    
+    A `railway.toml` is included.
+    
+    1. Connect your GitHub repo to Railway
+    2. Railway auto-detects the config and deploys
+    3. Set environment variables in the Railway dashboard
+    
+    <Info>
+      Railway provides a public URL automatically. No additional configuration needed.
+    </Info>
+    
+    ### Generic cloud (AWS, GCP, Azure, DigitalOcean)
+    
+    Deploy as a standard Node.js application:
+    
+    1. **Install Node.js 18+** on your VM
+    2. **Clone the repo** and run `npm install`
+    3. **Set environment variables** (see below)
+    4. **Start with process manager**: `pm2 start server.js --name camofox`
+    5. **Configure reverse proxy** (nginx/caddy) for HTTPS
+    
+    Example systemd service (`/etc/systemd/system/camofox.service`):
+    
+    ```ini
+    [Unit]
+    Description=Camofox Browser Server
+    After=network.target
+    
+    [Service]
+    Type=simple
+    User=camofox
+    WorkingDirectory=/opt/camofox-browser
+    Environment="NODE_ENV=production"
+    Environment="CAMOFOX_PORT=9377"
+    Environment="MAX_SESSIONS=100"
+    ExecStart=/usr/bin/node server.js
+    Restart=on-failure
+    
+    [Install]
+    WantedBy=multi-user.target
+    ```
+    
+    Enable and start:
+    
+    ```bash
+    sudo systemctl enable camofox
+    sudo systemctl start camofox
+    ```
+  </Tab>
+  
+  <Tab title="OpenClaw Plugin">
+    ### Install the plugin
+    
+    ```bash
+    openclaw plugins install @askjo/camofox-browser
+    ```
+    
+    The plugin auto-starts the server when OpenClaw launches.
+    
+    ### Verify plugin is loaded
+    
+    ```bash
+    openclaw plugins list
+    ```
+    
+    You should see `@askjo/camofox-browser` in the list.
+    
+    ### Check server status
+    
+    ```bash
+    openclaw camofox status
+    ```
+    
+    Output:
+    
+    ```
+    Camoufox server: ok
+      URL: http://localhost:9377
+      Engine: camoufox
+      Active tabs: 0
+      Managed: true
+    ```
+    
+    ### Available tools
+    
+    Once installed, your OpenClaw agent has access to:
+    
+    - `camofox_create_tab` - Create a new browser tab
+    - `camofox_snapshot` - Get page content with element refs
+    - `camofox_click` - Click an element
+    - `camofox_type` - Type text into an element
+    - `camofox_navigate` - Navigate to URL or search macro
+    - `camofox_scroll` - Scroll the page
+    - `camofox_screenshot` - Take a screenshot
+    - `camofox_close_tab` - Close a tab
+    - `camofox_list_tabs` - List open tabs
+    - `camofox_import_cookies` - Import cookies from file
+    
+    <Tip>
+      Use Camofox tools instead of the built-in browser tool - they bypass bot detection on Google, Amazon, LinkedIn, etc.
+    </Tip>
+    
+    ### Configure plugin settings
+    
+    Edit `openclaw.json`:
+    
+    ```json
+    {
+      "plugins": {
+        "entries": {
+          "@askjo/camofox-browser": {
+            "enabled": true,
+            "config": {
+              "port": 9377,
+              "autoStart": true,
+              "maxSessions": 50,
+              "sessionTimeoutMs": 1800000
+            }
+          }
+        }
+      }
+    }
+    ```
+    
+    ### Disable built-in browser tool
+    
+    To use Camofox as the **only** browser tool:
+    
+    ```json
+    {
+      "tools": {
+        "deny": ["browser"]
+      }
+    }
+    ```
+    
+    This removes OpenClaw's built-in browser tool, leaving only Camofox.
+    
+    ### Manual server control
+    
+    ```bash Start server
+    openclaw camofox start
+    ```
+    
+    ```bash Stop server
+    openclaw camofox stop
+    ```
+    
+    ```bash List tabs
+    openclaw camofox tabs
+    ```
+  </Tab>
+</Tabs>
+
+## Environment variables
+
+Configure the server with environment variables:
+
+<AccordionGroup>
+  <Accordion title="Core settings" icon="sliders">
+    | Variable | Description | Default |
+    |----------|-------------|----------|
+    | `CAMOFOX_PORT` | Server port | `9377` |
+    | `NODE_ENV` | Environment mode | `development` |
+    | `MAX_SESSIONS` | Max concurrent browser sessions | `50` |
+    | `MAX_TABS_PER_SESSION` | Max tabs per user session | `10` |
+    | `SESSION_TIMEOUT_MS` | Session inactivity timeout | `1800000` (30min) |
+    | `BROWSER_IDLE_TIMEOUT_MS` | Kill browser when idle | `300000` (5min) |
+  </Accordion>
+  
+  <Accordion title="Performance tuning" icon="gauge-high">
+    | Variable | Description | Default |
+    |----------|-------------|----------|
+    | `HANDLER_TIMEOUT_MS` | Max time for any handler | `30000` (30s) |
+    | `MAX_CONCURRENT_PER_USER` | Concurrent request cap per user | `3` |
+    | `MAX_OLD_SPACE_SIZE` | Node.js V8 heap limit (MB) | `128` |
+    | `NAVIGATE_TIMEOUT_MS` | Navigation timeout | `25000` (25s) |
+    | `BUILDREFS_TIMEOUT_MS` | Element ref building timeout | `12000` (12s) |
+  </Accordion>
+  
+  <Accordion title="Security" icon="shield">
+    | Variable | Description | Default |
+    |----------|-------------|----------|
+    | `CAMOFOX_API_KEY` | Enable cookie import endpoint | - |
+    | `CAMOFOX_ADMIN_KEY` | Required for `POST /stop` | - |
+    | `CAMOFOX_COOKIES_DIR` | Directory for cookie files | `~/.camofox/cookies` |
+    
+    <Warning>
+      Cookie import is **disabled** unless `CAMOFOX_API_KEY` is set. See [Cookie Import](/guides/cookie-import) for setup.
+    </Warning>
+  </Accordion>
+  
+  <Accordion title="Proxy configuration" icon="globe">
+    | Variable | Description | Default |
+    |----------|-------------|----------|
+    | `PROXY_HOST` | Proxy hostname or IP | - |
+    | `PROXY_PORT` | Proxy port | - |
+    | `PROXY_USERNAME` | Proxy auth username | - |
+    | `PROXY_PASSWORD` | Proxy auth password | - |
+    
+    When a proxy is configured:
+    - All traffic routes through the proxy
+    - Camoufox's GeoIP automatically sets `locale`, `timezone`, and `geolocation` to match the proxy's exit IP
+    - Browser fingerprint is consistent with proxy location
+    
+    Example:
+    
+    ```bash
+    export PROXY_HOST=166.88.179.132
+    export PROXY_PORT=46040
+    export PROXY_USERNAME=myuser
+    export PROXY_PASSWORD=mypass
+    npm start
+    ```
+  </Accordion>
+</AccordionGroup>
+
+## Resource requirements
+
+<Tabs>
+  <Tab title="Development">
+    Minimum:
+    - **CPU**: 1 core
+    - **RAM**: 2GB
+    - **Disk**: 1GB (500MB for Camoufox + dependencies)
+    
+    Recommended:
+    - **CPU**: 2 cores
+    - **RAM**: 4GB
+    - **Disk**: 2GB
+  </Tab>
+  
+  <Tab title="Production">
+    For 10 concurrent sessions:
+    - **CPU**: 2-4 cores
+    - **RAM**: 4-8GB
+    - **Disk**: 2GB
+    
+    For 50 concurrent sessions:
+    - **CPU**: 4-8 cores
+    - **RAM**: 8-16GB
+    - **Disk**: 2GB
+    
+    <Info>
+      Each active browser session uses ~150-200MB RAM. Idle sessions use ~40MB.
+    </Info>
+  </Tab>
+  
+  <Tab title="Cloud sizing">
+    ### Fly.io
+    
+    Recommended machine size: `shared-cpu-2x` (2 vCPU, 4GB RAM)
+    
+    ```toml fly.toml
+    [vm]
+      cpu_kind = "shared"
+      cpus = 2
+      memory_mb = 4096
+    ```
+    
+    ### Railway
+    
+    Recommended plan: **Starter** ($5/month, 512MB RAM, 1 vCPU)
+    
+    For production: **Pro** ($20/month, 8GB RAM, 8 vCPU)
+    
+    ### DigitalOcean
+    
+    - **$6/month droplet**: 1 vCPU, 1GB RAM - handles 5 concurrent sessions
+    - **$12/month droplet**: 1 vCPU, 2GB RAM - handles 10 concurrent sessions
+    - **$24/month droplet**: 2 vCPU, 4GB RAM - handles 20-30 concurrent sessions
+    
+    <Tip>
+      Start small and scale up. The browser shuts down when idle, so you pay for actual usage.
+    </Tip>
+  </Tab>
+</Tabs>
+
+## Optional dependencies
+
+### yt-dlp (YouTube transcripts)
+
+For fast YouTube transcript extraction:
+
+<CodeGroup>
+```bash pip
+pip install yt-dlp
+```
+
+```bash Homebrew
+brew install yt-dlp
+```
+
+```bash apt
+sudo apt install yt-dlp
+```
+</CodeGroup>
+
+<Note>
+  Without yt-dlp, the `/youtube/transcript` endpoint falls back to a slower browser-based method.
+</Note>
+
+The Docker image includes yt-dlp by default.
+
+## Verify installation
+
+Run these checks to ensure everything works:
+
+<Steps>
+  <Step title="Health check">
+    ```bash
+    curl http://localhost:9377/health
+    ```
+    
+    Should return: `{"ok": true, "engine": "camoufox"}`
+  </Step>
+  
+  <Step title="Create a test tab">
+    ```bash
+    curl -X POST http://localhost:9377/tabs \
+      -H 'Content-Type: application/json' \
+      -d '{"userId": "test", "sessionKey": "verify", "url": "https://example.com"}'
+    ```
+    
+    Should return a `tabId`.
+  </Step>
+  
+  <Step title="Get snapshot">
+    ```bash
+    curl "http://localhost:9377/tabs/TAB_ID/snapshot?userId=test"
+    ```
+    
+    Should return accessibility tree with "Example Domain" heading.
+  </Step>
+</Steps>
+
+<Info>
+  If step 2 hangs for ~30 seconds, this is normal on first run - Camoufox is launching the browser for the first time.
+</Info>
+
+## Troubleshooting
+
+<AccordionGroup>
+  <Accordion title="Server won't start" icon="circle-exclamation">
+    **Error**: `Error: Cannot find module 'camoufox-js'`
+    
+    Solution:
+    ```bash
+    npm install
+    ```
+    
+    **Error**: `Error: EADDRINUSE: address already in use`
+    
+    Solution: Port 9377 is in use. Change port:
+    ```bash
+    CAMOFOX_PORT=8080 npm start
+    ```
+  </Accordion>
+  
+  <Accordion title="Browser download fails" icon="download">
+    **Error**: `Error: Browser download failed`
+    
+    Solution:
+    1. Check internet connection
+    2. Retry: `npx camoufox-js fetch`
+    3. If behind a proxy, set `HTTP_PROXY` environment variable
+    
+    Manual download:
+    ```bash
+    npx camoufox-js fetch --force
+    ```
+  </Accordion>
+  
+  <Accordion title="Out of memory errors" icon="memory">
+    **Error**: `JavaScript heap out of memory`
+    
+    Solution: Increase Node.js heap size:
+    ```bash
+    node --max-old-space-size=512 server.js
+    ```
+    
+    Or set environment variable:
+    ```bash
+    export MAX_OLD_SPACE_SIZE=512
+    npm start
+    ```
+  </Accordion>
+  
+  <Accordion title="OpenClaw plugin not loading" icon="plug">
+    **Error**: `Plugin @askjo/camofox-browser failed to load`
+    
+    Solution:
+    1. Check plugin is installed: `openclaw plugins list`
+    2. Reinstall: `openclaw plugins install @askjo/camofox-browser`
+    3. Check logs: `openclaw logs`
+  </Accordion>
+</AccordionGroup>
+
+## Next steps
+
+<CardGroup cols={2}>
+  <Card title="Quickstart" icon="play" href="/quickstart">
+    Try your first browser automation workflow
+  </Card>
+  
+  <Card title="API reference" icon="code" href="/api/tabs/create">
+    Explore all endpoints and parameters
+  </Card>
+  
+  <Card title="Cookie import" icon="cookie" href="/guides/cookie-import">
+    Set up authenticated browsing for LinkedIn, Amazon, etc.
+  </Card>
+  
+  <Card title="Search macros" icon="magnifying-glass" href="/concepts/search-macros">
+    Use built-in shortcuts for Google, YouTube, Reddit, and more
+  </Card>
+</CardGroup>

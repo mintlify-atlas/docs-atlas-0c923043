@@ -1,0 +1,675 @@
+---
+title: OpenClaw plugin
+description: Install and use Camofox Browser as an OpenClaw plugin with auto-start, health checks, and CLI commands
+---
+
+The Camofox Browser OpenClaw plugin provides anti-detection browser automation tools that bypass bot detection on sites like Google, Amazon, and LinkedIn. The server auto-starts when the plugin loads and registers 10 browser automation tools for AI agents.
+
+## Installation
+
+Install the plugin using the OpenClaw CLI:
+
+```bash
+openclaw plugins install @askjo/camofox-browser
+```
+
+The plugin downloads the Camoufox browser engine (~300MB) on first use.
+
+## Auto-start behavior
+
+By default, the Camofox server **automatically starts** when OpenClaw loads the plugin. This means:
+
+- No manual server management required
+- Server launches in the background on port 9377
+- Health checks confirm server readiness before tool calls
+- Server persists across agent sessions
+
+To disable auto-start, configure the plugin in `openclaw.json`:
+
+```json
+{
+  "plugins": {
+    "entries": {
+      "camofox-browser": {
+        "enabled": true,
+        "config": {
+          "autoStart": false
+        }
+      }
+    }
+  }
+}
+```
+
+With `autoStart: false`, you must manually start the server using CLI commands.
+
+## Available tools
+
+The plugin registers 10 tools for browser automation. All tools use the `camofox_` prefix to distinguish them from built-in browser tools.
+
+### camofox_create_tab
+
+Create a new browser tab with anti-detection fingerprinting. Returns a `tabId` for subsequent operations.
+
+**Parameters:**
+- `url` (string, required) - Initial URL to navigate to
+
+**Example:**
+```json
+{
+  "url": "https://www.google.com"
+}
+```
+
+**Returns:** `{ "tabId": "abc123", "url": "...", "title": "..." }`
+
+### camofox_snapshot
+
+Get an accessibility snapshot of the page with element references (`e1`, `e2`, etc.) for interaction, plus an optional screenshot.
+
+**Parameters:**
+- `tabId` (string, required) - Tab identifier from create_tab
+- `offset` (number, optional) - Character offset for paginated snapshots. Use `nextOffset` from a previous truncated response to see more content.
+
+**Returns:**
+- Accessibility tree with clickable element refs
+- Optional base64 PNG screenshot
+- Pagination info if content is truncated (`hasMore`, `nextOffset`)
+
+**Large pages:** Snapshots exceeding token limits are automatically truncated. Check `hasMore` in the response and call again with the `nextOffset` value to retrieve additional content.
+
+### camofox_click
+
+Click an element by reference from a snapshot or CSS selector.
+
+**Parameters:**
+- `tabId` (string, required) - Tab identifier
+- `ref` (string) - Element ref from snapshot (e.g., `e1`)
+- `selector` (string) - CSS selector (alternative to ref)
+
+**Example:**
+```json
+{
+  "tabId": "abc123",
+  "ref": "e1"
+}
+```
+
+Provide either `ref` or `selector`, not both.
+
+### camofox_type
+
+Type text into an input field or editable element.
+
+**Parameters:**
+- `tabId` (string, required) - Tab identifier
+- `text` (string, required) - Text to type
+- `ref` (string) - Element ref from snapshot
+- `selector` (string) - CSS selector (alternative to ref)
+- `pressEnter` (boolean) - Press Enter after typing
+
+**Example:**
+```json
+{
+  "tabId": "abc123",
+  "ref": "e2",
+  "text": "search query",
+  "pressEnter": true
+}
+```
+
+### camofox_navigate
+
+Navigate to a URL or use a search macro like `@google_search`.
+
+**Parameters:**
+- `tabId` (string, required) - Tab identifier
+- `url` (string) - URL to navigate to
+- `macro` (string) - Search macro (e.g., `@google_search`)
+- `query` (string) - Search query when using a macro
+
+**Available macros:**
+- `@google_search`
+- `@youtube_search`
+- `@amazon_search`
+- `@reddit_search`
+- `@wikipedia_search`
+- `@twitter_search`
+- `@yelp_search`
+- `@spotify_search`
+- `@netflix_search`
+- `@linkedin_search`
+- `@instagram_search`
+- `@tiktok_search`
+- `@twitch_search`
+
+**Example with macro:**
+```json
+{
+  "tabId": "abc123",
+  "macro": "@google_search",
+  "query": "best coffee beans"
+}
+```
+
+### camofox_scroll
+
+Scroll the page in a specified direction.
+
+**Parameters:**
+- `tabId` (string, required) - Tab identifier
+- `direction` (string, required) - One of: `up`, `down`, `left`, `right`
+- `amount` (number) - Pixels to scroll (optional)
+
+### camofox_screenshot
+
+Take a full-page screenshot.
+
+**Parameters:**
+- `tabId` (string, required) - Tab identifier
+
+**Returns:** Base64-encoded PNG image
+
+### camofox_close_tab
+
+Close a browser tab and free resources.
+
+**Parameters:**
+- `tabId` (string, required) - Tab identifier
+
+### camofox_list_tabs
+
+List all open tabs for the current user.
+
+**Parameters:** None
+
+**Returns:** Array of tab objects with `tabId`, `url`, `title`, and `userId`
+
+### camofox_import_cookies
+
+Import cookies from a Netscape-format cookie file. Use this to authenticate to sites like LinkedIn without interactive login.
+
+**Parameters:**
+- `cookiesPath` (string, required) - Path to cookie file (relative to `~/.camofox/cookies/`)
+- `domainSuffix` (string, optional) - Only import cookies matching this domain suffix
+
+**Setup required:**
+
+<Steps>
+
+<Step title="Generate API key">
+
+Cookie import requires authentication:
+
+```bash
+openssl rand -hex 32
+```
+
+</Step>
+
+<Step title="Set environment variable">
+
+```bash
+export CAMOFOX_API_KEY="your-generated-key"
+openclaw start
+```
+
+The key is used by both the plugin (client) and server (validation).
+
+</Step>
+
+<Step title="Export cookies from browser">
+
+Use a browser extension like "cookies.txt" to export Netscape-format cookies.
+
+</Step>
+
+<Step title="Place cookie file">
+
+```bash
+mkdir -p ~/.camofox/cookies
+cp ~/Downloads/linkedin_cookies.txt ~/.camofox/cookies/linkedin.txt
+```
+
+</Step>
+
+<Step title="Import via agent">
+
+Ask your agent:
+
+> Import my LinkedIn cookies from linkedin.txt
+
+</Step>
+
+</Steps>
+
+<Warning>
+Cookie import is **disabled by default**. It only works when `CAMOFOX_API_KEY` is set. The server rejects all cookie requests with 403 if the key is missing.
+</Warning>
+
+## Configuration options
+
+Configure the plugin in `openclaw.json`:
+
+```json
+{
+  "plugins": {
+    "entries": {
+      "camofox-browser": {
+        "enabled": true,
+        "config": {
+          "port": 9377,
+          "autoStart": true,
+          "maxSessions": 5,
+          "maxTabsPerSession": 3,
+          "sessionTimeoutMs": 600000,
+          "browserIdleTimeoutMs": 300000,
+          "maxOldSpaceSize": 128
+        }
+      }
+    }
+  }
+}
+```
+
+### Configuration reference
+
+<ResponseField name="port" type="number" default="9377">
+  Server port. Change if 9377 conflicts with another service.
+</ResponseField>
+
+<ResponseField name="autoStart" type="boolean" default="true">
+  Auto-start server when plugin loads. Set to `false` for manual control.
+</ResponseField>
+
+<ResponseField name="maxSessions" type="number" default="5">
+  Maximum concurrent browser sessions. Each user gets an isolated session with separate cookies and storage.
+</ResponseField>
+
+<ResponseField name="maxTabsPerSession" type="number" default="3">
+  Maximum tabs per user session. Prevents resource exhaustion from runaway agents.
+</ResponseField>
+
+<ResponseField name="sessionTimeoutMs" type="number" default="600000">
+  Session inactivity timeout in milliseconds. Sessions close after 10 minutes (600000ms) by default.
+</ResponseField>
+
+<ResponseField name="browserIdleTimeoutMs" type="number" default="300000">
+  Kill the browser process after this many milliseconds with no active sessions. Set to `0` to keep the browser running indefinitely.
+</ResponseField>
+
+<ResponseField name="maxOldSpaceSize" type="number" default="128">
+  Node.js V8 heap limit in megabytes. Increase if you see out-of-memory errors with many concurrent tabs.
+</ResponseField>
+
+### Resource limits in context
+
+The default limits are conservative for shared environments:
+
+- **5 sessions** = 5 simultaneous users/agents
+- **3 tabs per session** = 15 total tabs maximum
+- **10 min session timeout** = automatic cleanup of idle agents
+- **5 min idle shutdown** = browser stops when not in use, restarts on next request
+
+For production workloads, increase limits based on available memory:
+
+```json
+{
+  "maxSessions": 20,
+  "maxTabsPerSession": 5,
+  "maxOldSpaceSize": 512
+}
+```
+
+## Health check registration
+
+The plugin registers a health check for `openclaw doctor` and `openclaw status`:
+
+```bash
+openclaw doctor
+```
+
+**Output:**
+```
+✓ camofox-browser: Server running (camoufox)
+  URL: http://localhost:9377
+  Engine: camoufox
+  Active tabs: 2
+  Managed: true
+```
+
+Health check statuses:
+- **ok** - Server reachable and healthy
+- **warn** - Server starting or temporarily unavailable
+- **error** - Server not reachable (check if auto-start disabled)
+
+## CLI commands
+
+The plugin adds the `openclaw camofox` command with subcommands:
+
+### openclaw camofox status
+
+Show server status and active tabs:
+
+```bash
+openclaw camofox status
+```
+
+**Output:**
+```
+Camoufox server: ok
+  URL: http://localhost:9377
+  Engine: camoufox
+  Active tabs: 2
+  Managed: true
+```
+
+### openclaw camofox start
+
+Manually start the server:
+
+```bash
+openclaw camofox start
+```
+
+Only needed if `autoStart: false` in config.
+
+### openclaw camofox stop
+
+Stop the managed server process:
+
+```bash
+openclaw camofox stop
+```
+
+This kills the server and closes all browser tabs. The server restarts automatically on the next tool call if `autoStart: true`.
+
+### openclaw camofox tabs
+
+List all active browser tabs:
+
+```bash
+openclaw camofox tabs
+```
+
+**Filter by user:**
+```bash
+openclaw camofox tabs --user agent1
+```
+
+### openclaw camofox configure
+
+Display configuration help:
+
+```bash
+openclaw camofox configure
+```
+
+Shows current settings and example `openclaw.json` snippets.
+
+## Agent workflow example
+
+Here's a typical agent workflow using Camofox tools:
+
+<Steps>
+
+<Step title="Create tab">
+
+Agent calls `camofox_create_tab` with a URL:
+
+```json
+{
+  "url": "https://www.google.com"
+}
+```
+
+Receives `tabId` for subsequent operations.
+
+</Step>
+
+<Step title="Get snapshot">
+
+Agent calls `camofox_snapshot` to see the page content:
+
+```json
+{
+  "tabId": "abc123"
+}
+```
+
+Receives accessibility tree with element refs:
+
+```
+[textbox e1] Search
+[button e2] Google Search
+[button e3] I'm Feeling Lucky
+```
+
+</Step>
+
+<Step title="Interact with page">
+
+Agent types into search box and submits:
+
+```json
+{
+  "tabId": "abc123",
+  "ref": "e1",
+  "text": "best coffee beans",
+  "pressEnter": true
+}
+```
+
+</Step>
+
+<Step title="Get updated snapshot">
+
+After navigation completes, agent calls `camofox_snapshot` again to see search results with new refs.
+
+</Step>
+
+<Step title="Extract information">
+
+Agent parses snapshot text to extract search results and clicks relevant links using new refs from the updated snapshot.
+
+</Step>
+
+<Step title="Clean up">
+
+Agent calls `camofox_close_tab` when done:
+
+```json
+{
+  "tabId": "abc123"
+}
+```
+
+</Step>
+
+</Steps>
+
+## Troubleshooting
+
+### Plugin won't start
+
+**Symptom:** Health check shows "error" status
+
+<Tabs>
+  <Tab title="Check auto-start">
+    
+Verify `autoStart` is not disabled:
+
+```bash
+cat ~/.openclaw/openclaw.json | grep -A 5 camofox-browser
+```
+
+If `autoStart: false`, either change to `true` or manually start:
+
+```bash
+openclaw camofox start
+```
+
+  </Tab>
+  <Tab title="Check logs">
+    
+View OpenClaw logs for error messages:
+
+```bash
+openclaw logs
+```
+
+Look for "Failed to auto-start server" or browser launch errors.
+
+  </Tab>
+  <Tab title="Verify installation">
+    
+Confirm plugin is installed:
+
+```bash
+openclaw plugins list
+```
+
+Reinstall if missing:
+
+```bash
+openclaw plugins install @askjo/camofox-browser
+```
+
+  </Tab>
+</Tabs>
+
+### Port conflicts
+
+**Symptom:** "Address already in use" error on port 9377
+
+<Steps>
+
+<Step title="Find conflicting process">
+
+```bash
+lsof -i :9377
+```
+
+Kill the process or choose a different port.
+
+</Step>
+
+<Step title="Configure custom port">
+
+Update `openclaw.json`:
+
+```json
+{
+  "plugins": {
+    "entries": {
+      "camofox-browser": {
+        "config": {
+          "port": 9378
+        }
+      }
+    }
+  }
+}
+```
+
+</Step>
+
+<Step title="Restart OpenClaw">
+
+```bash
+openclaw restart
+```
+
+</Step>
+
+</Steps>
+
+### Server unreachable during tool calls
+
+**Symptom:** Tool calls fail with connection errors
+
+<Note>
+The server may still be starting. Wait 15 seconds after OpenClaw launch before the first tool call.
+</Note>
+
+**Check manually:**
+
+```bash
+openclaw camofox status
+```
+
+If status shows "not reachable", try:
+
+```bash
+openclaw camofox stop
+openclaw camofox start
+```
+
+### Cookie import returns 403
+
+**Symptom:** `camofox_import_cookies` fails with "Forbidden"
+
+**Cause:** `CAMOFOX_API_KEY` is not set.
+
+**Solution:**
+
+```bash
+export CAMOFOX_API_KEY="$(openssl rand -hex 32)"
+openclaw restart
+```
+
+The API key must be set before starting OpenClaw. Add to your shell profile for persistence:
+
+```bash
+echo 'export CAMOFOX_API_KEY="your-key-here"' >> ~/.bashrc
+```
+
+### Out of memory errors
+
+**Symptom:** Server crashes with heap out of memory
+
+**Solution:** Increase Node.js heap limit:
+
+```json
+{
+  "plugins": {
+    "entries": {
+      "camofox-browser": {
+        "config": {
+          "maxOldSpaceSize": 512
+        }
+      }
+    }
+  }
+}
+```
+
+Also reduce concurrent tabs:
+
+```json
+{
+  "maxSessions": 3,
+  "maxTabsPerSession": 2
+}
+```
+
+## Disabling built-in browser tools
+
+To use Camofox as the **only** browser tool in OpenClaw, disable the built-in browser:
+
+```json
+{
+  "tools": {
+    "deny": ["browser"]
+  },
+  "plugins": {
+    "entries": {
+      "camofox-browser": {
+        "enabled": true
+      }
+    }
+  }
+}
+```
+
+This removes OpenClaw's built-in browser tool, leaving only the `camofox_*` tools. Useful when you need anti-detection for all browsing tasks.

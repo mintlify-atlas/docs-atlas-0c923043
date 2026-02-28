@@ -1,0 +1,943 @@
+---
+title: Standalone server
+description: Run Camofox Browser as a standalone HTTP server for integration with any language or framework
+---
+
+Camofox Browser runs as a standalone HTTP server, making it easy to integrate with any language, framework, or agent system. The server exposes a REST API for browser automation with anti-detection fingerprinting.
+
+## Installation and startup
+
+Clone the repository and install dependencies:
+
+```bash
+git clone https://github.com/jo-inc/camofox-browser
+cd camofox-browser
+npm install
+```
+
+Start the server:
+
+```bash
+npm start
+```
+
+The server downloads the Camoufox browser engine (~300MB) on first run, then starts on port 9377.
+
+**Production startup:**
+
+```bash
+NODE_ENV=production npm start
+```
+
+## Default port
+
+The server listens on **port 9377** by default. Change it with the `CAMOFOX_PORT` environment variable:
+
+```bash
+CAMOFOX_PORT=8080 npm start
+```
+
+## Making HTTP requests
+
+All endpoints accept JSON and return JSON responses. Include `Content-Type: application/json` for POST requests.
+
+### curl example
+
+```bash
+# Create a tab
+curl -X POST http://localhost:9377/tabs \
+  -H 'Content-Type: application/json' \
+  -d '{"userId": "agent1", "sessionKey": "task1", "url": "https://example.com"}'
+
+# Get snapshot
+curl "http://localhost:9377/tabs/TAB_ID/snapshot?userId=agent1"
+
+# Click element
+curl -X POST http://localhost:9377/tabs/TAB_ID/click \
+  -H 'Content-Type: application/json' \
+  -d '{"userId": "agent1", "ref": "e1"}'
+```
+
+### fetch example (JavaScript)
+
+```javascript
+// Create tab
+const createResponse = await fetch('http://localhost:9377/tabs', {
+  method: 'POST',
+  headers: { 'Content-Type': 'application/json' },
+  body: JSON.stringify({
+    userId: 'agent1',
+    sessionKey: 'task1',
+    url: 'https://example.com'
+  })
+});
+const { tabId } = await createResponse.json();
+
+// Get snapshot
+const snapshotResponse = await fetch(
+  `http://localhost:9377/tabs/${tabId}/snapshot?userId=agent1`
+);
+const snapshot = await snapshotResponse.json();
+```
+
+### axios example (JavaScript)
+
+```javascript
+const axios = require('axios');
+
+const client = axios.create({
+  baseURL: 'http://localhost:9377',
+  headers: { 'Content-Type': 'application/json' }
+});
+
+// Create tab
+const { data: tab } = await client.post('/tabs', {
+  userId: 'agent1',
+  sessionKey: 'task1',
+  url: 'https://example.com'
+});
+
+// Click element
+await client.post(`/tabs/${tab.tabId}/click`, {
+  userId: 'agent1',
+  ref: 'e1'
+});
+```
+
+## Language-specific examples
+
+### Node.js
+
+```javascript
+const fetch = require('node-fetch');
+
+class CamofoxClient {
+  constructor(baseUrl = 'http://localhost:9377') {
+    this.baseUrl = baseUrl;
+  }
+
+  async createTab(userId, url, sessionKey = 'default') {
+    const response = await fetch(`${this.baseUrl}/tabs`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ userId, url, sessionKey })
+    });
+    return response.json();
+  }
+
+  async getSnapshot(tabId, userId) {
+    const response = await fetch(
+      `${this.baseUrl}/tabs/${tabId}/snapshot?userId=${userId}`
+    );
+    return response.json();
+  }
+
+  async click(tabId, userId, ref) {
+    const response = await fetch(`${this.baseUrl}/tabs/${tabId}/click`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ userId, ref })
+    });
+    return response.json();
+  }
+
+  async closeTab(tabId, userId) {
+    await fetch(`${this.baseUrl}/tabs/${tabId}?userId=${userId}`, {
+      method: 'DELETE'
+    });
+  }
+}
+
+// Usage
+const client = new CamofoxClient();
+const tab = await client.createTab('agent1', 'https://google.com');
+const snapshot = await client.getSnapshot(tab.tabId, 'agent1');
+await client.click(tab.tabId, 'agent1', 'e1');
+await client.closeTab(tab.tabId, 'agent1');
+```
+
+### Python
+
+```python
+import requests
+from typing import Dict, Any
+
+class CamofoxClient:
+    def __init__(self, base_url: str = "http://localhost:9377"):
+        self.base_url = base_url
+        self.session = requests.Session()
+        self.session.headers.update({'Content-Type': 'application/json'})
+    
+    def create_tab(self, user_id: str, url: str, session_key: str = "default") -> Dict[str, Any]:
+        response = self.session.post(
+            f"{self.base_url}/tabs",
+            json={"userId": user_id, "url": url, "sessionKey": session_key}
+        )
+        response.raise_for_status()
+        return response.json()
+    
+    def get_snapshot(self, tab_id: str, user_id: str) -> Dict[str, Any]:
+        response = self.session.get(
+            f"{self.base_url}/tabs/{tab_id}/snapshot",
+            params={"userId": user_id}
+        )
+        response.raise_for_status()
+        return response.json()
+    
+    def click(self, tab_id: str, user_id: str, ref: str) -> Dict[str, Any]:
+        response = self.session.post(
+            f"{self.base_url}/tabs/{tab_id}/click",
+            json={"userId": user_id, "ref": ref}
+        )
+        response.raise_for_status()
+        return response.json()
+    
+    def close_tab(self, tab_id: str, user_id: str) -> None:
+        response = self.session.delete(
+            f"{self.base_url}/tabs/{tab_id}",
+            params={"userId": user_id}
+        )
+        response.raise_for_status()
+
+# Usage
+client = CamofoxClient()
+tab = client.create_tab("agent1", "https://google.com")
+snapshot = client.get_snapshot(tab["tabId"], "agent1")
+client.click(tab["tabId"], "agent1", "e1")
+client.close_tab(tab["tabId"], "agent1")
+```
+
+### Go
+
+```go
+package main
+
+import (
+	"bytes"
+	"encoding/json"
+	"fmt"
+	"io"
+	"net/http"
+)
+
+type CamofoxClient struct {
+	BaseURL string
+	Client  *http.Client
+}
+
+type CreateTabRequest struct {
+	UserID     string `json:"userId"`
+	URL        string `json:"url"`
+	SessionKey string `json:"sessionKey"`
+}
+
+type Tab struct {
+	TabID string `json:"tabId"`
+	URL   string `json:"url"`
+	Title string `json:"title"`
+}
+
+func NewCamofoxClient(baseURL string) *CamofoxClient {
+	return &CamofoxClient{
+		BaseURL: baseURL,
+		Client:  &http.Client{},
+	}
+}
+
+func (c *CamofoxClient) CreateTab(userID, url, sessionKey string) (*Tab, error) {
+	reqBody, _ := json.Marshal(CreateTabRequest{
+		UserID:     userID,
+		URL:        url,
+		SessionKey: sessionKey,
+	})
+
+	resp, err := c.Client.Post(
+		c.BaseURL+"/tabs",
+		"application/json",
+		bytes.NewBuffer(reqBody),
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+
+	var tab Tab
+	if err := json.NewDecoder(resp.Body).Decode(&tab); err != nil {
+		return nil, err
+	}
+	return &tab, nil
+}
+
+func (c *CamofoxClient) GetSnapshot(tabID, userID string) (map[string]interface{}, error) {
+	url := fmt.Sprintf("%s/tabs/%s/snapshot?userId=%s", c.BaseURL, tabID, userID)
+	resp, err := c.Client.Get(url)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+
+	var snapshot map[string]interface{}
+	if err := json.NewDecoder(resp.Body).Decode(&snapshot); err != nil {
+		return nil, err
+	}
+	return snapshot, nil
+}
+
+func main() {
+	client := NewCamofoxClient("http://localhost:9377")
+	tab, _ := client.CreateTab("agent1", "https://google.com", "default")
+	snapshot, _ := client.GetSnapshot(tab.TabID, "agent1")
+	fmt.Printf("Snapshot: %+v\n", snapshot)
+}
+```
+
+### Rust
+
+```rust
+use serde::{Deserialize, Serialize};
+use reqwest;
+
+#[derive(Serialize)]
+struct CreateTabRequest {
+    #[serde(rename = "userId")]
+    user_id: String,
+    url: String,
+    #[serde(rename = "sessionKey")]
+    session_key: String,
+}
+
+#[derive(Deserialize, Debug)]
+struct Tab {
+    #[serde(rename = "tabId")]
+    tab_id: String,
+    url: String,
+    title: String,
+}
+
+struct CamofoxClient {
+    base_url: String,
+    client: reqwest::Client,
+}
+
+impl CamofoxClient {
+    fn new(base_url: &str) -> Self {
+        Self {
+            base_url: base_url.to_string(),
+            client: reqwest::Client::new(),
+        }
+    }
+
+    async fn create_tab(
+        &self,
+        user_id: &str,
+        url: &str,
+        session_key: &str,
+    ) -> Result<Tab, reqwest::Error> {
+        let request = CreateTabRequest {
+            user_id: user_id.to_string(),
+            url: url.to_string(),
+            session_key: session_key.to_string(),
+        };
+
+        let response = self
+            .client
+            .post(format!("{}/tabs", self.base_url))
+            .json(&request)
+            .send()
+            .await?;
+
+        response.json::<Tab>().await
+    }
+
+    async fn get_snapshot(
+        &self,
+        tab_id: &str,
+        user_id: &str,
+    ) -> Result<serde_json::Value, reqwest::Error> {
+        let url = format!(
+            "{}/tabs/{}/snapshot?userId={}",
+            self.base_url, tab_id, user_id
+        );
+
+        let response = self.client.get(&url).send().await?;
+        response.json().await
+    }
+}
+
+#[tokio::main]
+async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    let client = CamofoxClient::new("http://localhost:9377");
+    let tab = client.create_tab("agent1", "https://google.com", "default").await?;
+    let snapshot = client.get_snapshot(&tab.tab_id, "agent1").await?;
+    println!("Snapshot: {:?}", snapshot);
+    Ok(())
+}
+```
+
+## Authentication patterns
+
+Camofox uses query parameters for user identification:
+
+### userId parameter
+
+The `userId` isolates cookies and storage between users. Each `userId` gets a separate browser context.
+
+```bash
+# User A's session
+curl "http://localhost:9377/tabs?userId=userA"
+
+# User B's session (isolated from A)
+curl "http://localhost:9377/tabs?userId=userB"
+```
+
+**When to use:**
+- Multi-tenant applications where users should not share state
+- Testing with different account credentials
+- Isolating agent tasks
+
+### API key for cookies
+
+Cookie import requires authentication via the `Authorization` header:
+
+```bash
+curl -X POST http://localhost:9377/sessions/agent1/cookies \
+  -H 'Authorization: Bearer YOUR_CAMOFOX_API_KEY' \
+  -H 'Content-Type: application/json' \
+  -d '{"cookies": [{"name": "session", "value": "abc", "domain": "example.com"}]}'
+```
+
+**Setup:**
+
+```bash
+export CAMOFOX_API_KEY="$(openssl rand -hex 32)"
+CAMOFOX_API_KEY=$CAMOFOX_API_KEY npm start
+```
+
+<Warning>
+Cookie import is **disabled by default**. Set `CAMOFOX_API_KEY` to enable it. Without the key, the server rejects cookie requests with 403 Forbidden.
+</Warning>
+
+## Client library recommendations
+
+<Note>
+Camofox does not provide official client libraries. Use standard HTTP clients in your language.
+</Note>
+
+Recommended libraries:
+
+| Language | Library | Installation |
+|----------|---------|-------------|
+| Node.js | `node-fetch` or `axios` | `npm install node-fetch` |
+| Python | `requests` | `pip install requests` |
+| Go | `net/http` (stdlib) | Built-in |
+| Rust | `reqwest` | `cargo add reqwest` |
+| Ruby | `faraday` or `httparty` | `gem install faraday` |
+| Java | `OkHttp` | Maven/Gradle dependency |
+| PHP | `Guzzle` | `composer require guzzlehttp/guzzle` |
+
+The REST API is stable and follows standard HTTP conventions. Any HTTP client works.
+
+## Integration patterns
+
+### Webhook handlers
+
+Use Camofox to scrape data in response to webhook events:
+
+```javascript
+// Express.js webhook handler
+app.post('/webhook/scrape', async (req, res) => {
+  const { url, userId } = req.body;
+  
+  // Create tab
+  const tab = await camofoxClient.createTab(userId, url);
+  
+  // Get snapshot
+  const snapshot = await camofoxClient.getSnapshot(tab.tabId, userId);
+  
+  // Extract data from snapshot
+  const data = parseSnapshot(snapshot.snapshot);
+  
+  // Clean up
+  await camofoxClient.closeTab(tab.tabId, userId);
+  
+  res.json({ success: true, data });
+});
+```
+
+### Cron jobs
+
+Schedule periodic scraping tasks:
+
+```javascript
+const cron = require('node-cron');
+
+// Run every day at 9 AM
+cron.schedule('0 9 * * *', async () => {
+  const tab = await camofoxClient.createTab('cron-job', 'https://news.ycombinator.com');
+  const snapshot = await camofoxClient.getSnapshot(tab.tabId, 'cron-job');
+  
+  // Process headlines
+  const headlines = extractHeadlines(snapshot.snapshot);
+  await saveToDatabase(headlines);
+  
+  await camofoxClient.closeTab(tab.tabId, 'cron-job');
+});
+```
+
+### Agent frameworks
+
+Integrate with LangChain, AutoGPT, or custom agent loops:
+
+```python
+from langchain.tools import Tool
+
+def create_browser_tool(client: CamofoxClient, user_id: str):
+    def browse_web(url: str) -> str:
+        tab = client.create_tab(user_id, url)
+        snapshot = client.get_snapshot(tab["tabId"], user_id)
+        client.close_tab(tab["tabId"], user_id)
+        return snapshot["snapshot"]
+    
+    return Tool(
+        name="browse_web",
+        description="Browse a webpage and return its content",
+        func=browse_web
+    )
+
+# Add to agent
+client = CamofoxClient()
+agent.tools.append(create_browser_tool(client, "agent1"))
+```
+
+### Queue workers
+
+Process scraping jobs from a queue:
+
+```python
+import redis
+import json
+
+redis_client = redis.Redis()
+camofox_client = CamofoxClient()
+
+while True:
+    # Pop job from queue
+    job_data = redis_client.blpop('scrape_queue', timeout=5)
+    if not job_data:
+        continue
+    
+    job = json.loads(job_data[1])
+    
+    # Scrape with Camofox
+    tab = camofox_client.create_tab(job['user_id'], job['url'])
+    snapshot = camofox_client.get_snapshot(tab['tabId'], job['user_id'])
+    
+    # Store results
+    redis_client.set(f"result:{job['id']}", json.dumps(snapshot))
+    
+    # Clean up
+    camofox_client.close_tab(tab['tabId'], job['user_id'])
+```
+
+## Monitoring and logging
+
+Camofox outputs structured JSON logs for production observability.
+
+### Log format
+
+Every log line is a JSON object:
+
+```json
+{"ts":"2026-02-28T12:34:56.789Z","level":"info","msg":"req","reqId":"a1b2c3","method":"POST","path":"/tabs","userId":"agent1"}
+{"ts":"2026-02-28T12:34:57.123Z","level":"info","msg":"res","reqId":"a1b2c3","status":200,"ms":334}
+```
+
+### Fields
+
+- `ts` - ISO 8601 timestamp
+- `level` - Log level (`info`, `error`, `warn`)
+- `msg` - Message type (`req`, `res`, `err`)
+- `reqId` - Request ID for correlation
+- `method` - HTTP method
+- `path` - Request path
+- `userId` - User identifier from request
+- `status` - HTTP status code
+- `ms` - Request duration in milliseconds
+
+### Parsing logs
+
+Use `jq` to filter and query logs:
+
+```bash
+# Show only errors
+cat server.log | jq 'select(.level == "error")'
+
+# Show slow requests (>1000ms)
+cat server.log | jq 'select(.ms > 1000)'
+
+# Count requests by user
+cat server.log | jq -r '.userId' | sort | uniq -c
+
+# Average response time
+cat server.log | jq -s 'map(select(.ms)) | add / length'
+```
+
+### Aggregation with log collectors
+
+Forward logs to aggregation services:
+
+**Datadog:**
+```bash
+npm start | datadog-agent run
+```
+
+**Logstash:**
+```bash
+npm start | logstash -f logstash.conf
+```
+
+**CloudWatch (AWS):**
+```bash
+npm start | aws logs put-log-events --log-group-name camofox --log-stream-name production
+```
+
+### Health check endpoint
+
+Monitor server health:
+
+```bash
+curl http://localhost:9377/health
+```
+
+**Response:**
+```json
+{
+  "status": "ok",
+  "engine": "camoufox",
+  "activeTabs": 3
+}
+```
+
+Use this endpoint for:
+- Load balancer health checks
+- Kubernetes liveness/readiness probes
+- Uptime monitoring (Pingdom, UptimeRobot)
+
+## Production deployment checklist
+
+Before deploying to production:
+
+<Steps>
+
+<Step title="Set environment variables">
+
+```bash
+export NODE_ENV=production
+export CAMOFOX_PORT=9377
+export CAMOFOX_API_KEY="$(openssl rand -hex 32)"
+export MAX_SESSIONS=20
+export MAX_TABS_PER_SESSION=5
+export SESSION_TIMEOUT_MS=1800000
+```
+
+</Step>
+
+<Step title="Configure resource limits">
+
+Adjust based on available memory:
+
+```bash
+export MAX_OLD_SPACE_SIZE=512  # MB
+export BROWSER_IDLE_TIMEOUT_MS=300000  # 5 minutes
+```
+
+</Step>
+
+<Step title="Set up process manager">
+
+Use PM2 or systemd to keep the server running:
+
+**PM2:**
+```bash
+npm install -g pm2
+pm2 start npm --name camofox-browser -- start
+pm2 save
+pm2 startup
+```
+
+**systemd:**
+```ini
+[Unit]
+Description=Camofox Browser Server
+After=network.target
+
+[Service]
+Type=simple
+User=camofox
+WorkingDirectory=/opt/camofox-browser
+Environment=NODE_ENV=production
+Environment=CAMOFOX_PORT=9377
+ExecStart=/usr/bin/npm start
+Restart=always
+
+[Install]
+WantedBy=multi-user.target
+```
+
+</Step>
+
+<Step title="Configure reverse proxy">
+
+Use nginx for HTTPS and rate limiting:
+
+```nginx
+upstream camofox {
+    server 127.0.0.1:9377;
+}
+
+server {
+    listen 443 ssl;
+    server_name camofox.example.com;
+
+    ssl_certificate /etc/letsencrypt/live/example.com/fullchain.pem;
+    ssl_certificate_key /etc/letsencrypt/live/example.com/privkey.pem;
+
+    location / {
+        proxy_pass http://camofox;
+        proxy_http_version 1.1;
+        proxy_set_header Upgrade $http_upgrade;
+        proxy_set_header Connection 'upgrade';
+        proxy_set_header Host $host;
+        proxy_cache_bypass $http_upgrade;
+        
+        # Rate limiting
+        limit_req zone=camofox burst=10 nodelay;
+    }
+}
+
+limit_req_zone $binary_remote_addr zone=camofox:10m rate=10r/s;
+```
+
+</Step>
+
+<Step title="Set up monitoring">
+
+Monitor health endpoint:
+
+```bash
+# Add to crontab
+* * * * * curl -f http://localhost:9377/health || systemctl restart camofox-browser
+```
+
+Or use Prometheus:
+
+```yaml
+scrape_configs:
+  - job_name: 'camofox'
+    static_configs:
+      - targets: ['localhost:9377']
+    metrics_path: '/health'
+```
+
+</Step>
+
+<Step title="Configure logging">
+
+Rotate logs to prevent disk space issues:
+
+```bash
+# logrotate config
+/var/log/camofox-browser/*.log {
+    daily
+    rotate 14
+    compress
+    delaycompress
+    notifempty
+    create 0640 camofox camofox
+    sharedscripts
+    postrotate
+        systemctl reload camofox-browser
+    endscript
+}
+```
+
+</Step>
+
+<Step title="Test with load">
+
+Simulate concurrent requests:
+
+```bash
+for i in {1..50}; do
+  curl -X POST http://localhost:9377/tabs \
+    -H 'Content-Type: application/json' \
+    -d '{"userId": "loadtest'$i'", "url": "https://example.com"}' &
+done
+wait
+```
+
+Monitor memory usage:
+
+```bash
+ps aux | grep node
+```
+
+</Step>
+
+<Step title="Document API credentials">
+
+Store `CAMOFOX_API_KEY` securely:
+- Use environment variables (not config files)
+- Rotate keys periodically
+- Restrict access to cookie import endpoint
+
+</Step>
+
+</Steps>
+
+## Docker deployment
+
+Build and run the Docker image:
+
+```bash
+docker build -t camofox-browser .
+docker run -d \
+  --name camofox \
+  -p 9377:9377 \
+  -e NODE_ENV=production \
+  -e CAMOFOX_API_KEY="your-key" \
+  -e MAX_SESSIONS=20 \
+  --restart unless-stopped \
+  camofox-browser
+```
+
+**Docker Compose:**
+
+```yaml
+version: '3.8'
+
+services:
+  camofox:
+    build: .
+    ports:
+      - "9377:9377"
+    environment:
+      - NODE_ENV=production
+      - CAMOFOX_API_KEY=${CAMOFOX_API_KEY}
+      - MAX_SESSIONS=20
+      - MAX_TABS_PER_SESSION=5
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:9377/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+```
+
+## Cloud deployment
+
+### Fly.io
+
+```bash
+# Login
+fly auth login
+
+# Launch app
+fly launch
+
+# Set secrets
+fly secrets set CAMOFOX_API_KEY="your-key"
+
+# Deploy
+fly deploy
+```
+
+The included `fly.toml` configures memory and scaling.
+
+### Railway
+
+Connect the GitHub repository to Railway. The included `railway.toml` auto-configures deployment.
+
+Add environment variables in the Railway dashboard:
+- `CAMOFOX_API_KEY`
+- `MAX_SESSIONS`
+- `MAX_OLD_SPACE_SIZE`
+
+### AWS ECS
+
+Create a task definition:
+
+```json
+{
+  "family": "camofox-browser",
+  "containerDefinitions": [
+    {
+      "name": "camofox",
+      "image": "your-registry/camofox-browser:latest",
+      "memory": 1024,
+      "cpu": 512,
+      "essential": true,
+      "portMappings": [
+        {
+          "containerPort": 9377,
+          "protocol": "tcp"
+        }
+      ],
+      "environment": [
+        {"name": "NODE_ENV", "value": "production"},
+        {"name": "MAX_SESSIONS", "value": "20"}
+      ],
+      "secrets": [
+        {
+          "name": "CAMOFOX_API_KEY",
+          "valueFrom": "arn:aws:secretsmanager:..."
+        }
+      ]
+    }
+  ]
+}
+```
+
+### DigitalOcean App Platform
+
+Use the web UI to deploy from GitHub. Configure:
+
+- **Environment variables:** `NODE_ENV`, `CAMOFOX_API_KEY`
+- **Build command:** `npm install`
+- **Run command:** `npm start`
+- **HTTP port:** `9377`
+- **Health check:** `/health`
+
+## Performance tuning
+
+### Optimize for low memory
+
+```bash
+export MAX_SESSIONS=3
+export MAX_TABS_PER_SESSION=2
+export MAX_OLD_SPACE_SIZE=128
+export BROWSER_IDLE_TIMEOUT_MS=60000  # Kill browser after 1 min idle
+```
+
+### Optimize for high throughput
+
+```bash
+export MAX_SESSIONS=50
+export MAX_TABS_PER_SESSION=10
+export MAX_OLD_SPACE_SIZE=2048
+export SESSION_TIMEOUT_MS=3600000  # 1 hour
+export BROWSER_IDLE_TIMEOUT_MS=0  # Never kill browser
+```
+
+### Use proxy for scale
+
+Rotate IPs with a proxy pool:
+
+```bash
+export PROXY_HOST=rotating-proxy.example.com
+export PROXY_PORT=8080
+export PROXY_USERNAME=user
+export PROXY_PASSWORD=pass
+```
+
+Camofox automatically sets locale/timezone based on proxy GeoIP.

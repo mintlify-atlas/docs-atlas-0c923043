@@ -1,0 +1,171 @@
+---
+title: Introduction
+description: Anti-detection headless browser automation server for AI agents, powered by Camoufox
+---
+
+## What is Camofox Browser?
+
+Camofox Browser is a headless browser automation server built specifically for AI agents that need to browse the real web. It wraps the [Camoufox engine](https://camoufox.com) (a Firefox fork with fingerprint spoofing at the C++ implementation level) in a REST API designed for token efficiency and reliable interaction.
+
+<Info>
+  **Standing on the shoulders of Camoufox** - The same engine behind [askjo.ai](https://askjo.ai)'s web browsing.
+</Info>
+
+## Why Camofox exists
+
+AI agents need to browse the real web. But traditional approaches fail:
+
+- **Playwright gets blocked** by modern bot detection
+- **Headless Chrome gets fingerprinted** immediately
+- **Stealth plugins become the fingerprint** themselves
+
+Camoufox solves this by patching Firefox at the **C++ implementation level**:
+
+- `navigator.hardwareConcurrency` - spoofed in C++
+- WebGL renderers - patched before JS sees them
+- AudioContext - modified at the engine level
+- Screen geometry & WebRTC - all spoofed natively
+
+**No shims, no wrappers, no tells.** JavaScript never knows it's being watched.
+
+## Key features
+
+<CardGroup cols={2}>
+  <Card title="C++ anti-detection" icon="shield-check">
+    Bypasses Google, Cloudflare, and most bot detection systems by patching Firefox at the implementation level
+  </Card>
+  
+  <Card title="Element refs" icon="hashtag">
+    Stable `e1`, `e2`, `e3` identifiers for reliable interaction - no brittle XPath or CSS selectors
+  </Card>
+  
+  <Card title="Token-efficient" icon="minimize">
+    Accessibility snapshots are ~90% smaller than raw HTML, saving context window space
+  </Card>
+  
+  <Card title="Runs on anything" icon="microchip">
+    Lazy browser launch + idle shutdown keeps memory at ~40MB when idle. Raspberry Pi, $5 VPS, shared Railway infra
+  </Card>
+  
+  <Card title="Session isolation" icon="users">
+    Separate cookies and storage per user for multi-tenant agent systems
+  </Card>
+  
+  <Card title="Cookie import" icon="cookie">
+    Inject Netscape-format cookie files for authenticated browsing without interactive login
+  </Card>
+  
+  <Card title="Proxy + GeoIP" icon="globe">
+    Route traffic through residential proxies with automatic locale/timezone matching
+  </Card>
+  
+  <Card title="Search macros" icon="magnifying-glass">
+    Built-in shortcuts: `@google_search`, `@youtube_search`, `@amazon_search`, and 11 more
+  </Card>
+  
+  <Card title="Structured logging" icon="list">
+    JSON log lines with request IDs for production observability
+  </Card>
+  
+  <Card title="YouTube transcripts" icon="closed-captioning">
+    Extract captions from any YouTube video via yt-dlp, no API key needed
+  </Card>
+  
+  <Card title="Large page handling" icon="file-invoice">
+    Automatic snapshot truncation with offset-based pagination for content-heavy pages
+  </Card>
+  
+  <Card title="Deploy anywhere" icon="rocket">
+    Docker, Fly.io, Railway, or standalone - runs wherever Node.js runs
+  </Card>
+</CardGroup>
+
+## Architecture overview
+
+Camofox Browser uses a hierarchical session model:
+
+```
+Browser Instance (Camoufox)
+└── User Session (BrowserContext) - isolated cookies/storage
+    ├── Tab Group (sessionKey: "conv1")
+    │   ├── Tab (google.com)
+    │   └── Tab (github.com)
+    └── Tab Group (sessionKey: "conv2")
+        └── Tab (amazon.com)
+```
+
+- **Browser instance**: Single Camoufox process (launches on-demand, shuts down when idle)
+- **User sessions**: Isolated browser contexts per `userId` with separate cookies/storage
+- **Tab groups**: Tabs grouped by `sessionKey` for conversation/task isolation
+- **Tabs**: Individual browser tabs with stable element refs
+
+<Note>
+  Sessions auto-expire after 30 minutes of inactivity. The browser shuts down after 5 minutes with no active sessions, and relaunches on the next request.
+</Note>
+
+## How it works
+
+Camofox exposes a REST API that AI agents use to control the browser:
+
+1. **Create a tab** → Returns `tabId` for subsequent operations
+2. **Navigate** → Go to URL or use search macro
+3. **Get snapshot** → Receive accessibility tree with element refs (`e1`, `e2`, etc.)
+4. **Interact** → Click/type using refs
+5. **Repeat** → Continue until task complete
+
+The accessibility snapshot is the secret sauce:
+
+```
+[heading] Example Domain
+[paragraph] This domain is for use in examples.
+[link e1] More information...
+[button e2] Submit
+```
+
+Refs like `e1` and `e2` are stable identifiers that survive minor page changes - no brittle CSS selectors or XPath queries.
+
+## What's different from other browser tools?
+
+<Tabs>
+  <Tab title="vs Playwright/Puppeteer">
+    **Playwright/Puppeteer** use Chromium with stealth plugins. These get fingerprinted immediately by modern bot detection.
+    
+    **Camofox** patches Firefox at the C++ level before JavaScript ever runs. No shim layer to detect.
+  </Tab>
+  
+  <Tab title="vs Browser-Use">
+    **Browser-Use** sends full HTML/screenshots to the LLM, consuming massive context windows.
+    
+    **Camofox** sends accessibility snapshots (~90% smaller) with stable element refs for efficient token usage.
+  </Tab>
+  
+  <Tab title="vs Commercial APIs">
+    **Commercial scraping APIs** (Apify, ScrapingBee, etc.) charge per request and have rate limits.
+    
+    **Camofox** runs on your own infrastructure. Deploy once, use unlimited. $5/month VPS handles hundreds of requests/hour.
+  </Tab>
+</Tabs>
+
+## Get started
+
+<CardGroup cols={2}>
+  <Card title="Quickstart" icon="play" href="/quickstart">
+    Get a working browser automation example in under 2 minutes
+  </Card>
+  
+  <Card title="Installation" icon="download" href="/installation">
+    Install via npm, Docker, or as an OpenClaw plugin
+  </Card>
+  
+  <Card title="API reference" icon="code" href="/api/tabs/create">
+    Complete REST API documentation with all endpoints
+  </Card>
+  
+  <Card title="GitHub" icon="github" href="https://github.com/jo-inc/camofox-browser">
+    View source code and contribute on GitHub
+  </Card>
+</CardGroup>
+
+## License
+
+Camofox Browser is MIT licensed. The underlying Camoufox engine is also open source - consider [donating to its creator](https://camoufox.com/about/).

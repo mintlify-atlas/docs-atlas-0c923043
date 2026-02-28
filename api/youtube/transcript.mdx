@@ -1,0 +1,230 @@
+---
+title: YouTube Transcript
+description: Extract captions and transcripts from YouTube videos
+---
+
+Extract captions from any YouTube video without an API key. Uses a two-tier approach: fast yt-dlp extraction when available, with browser-based fallback.
+
+## Endpoint
+
+```
+POST /youtube/transcript
+```
+
+## Request body
+
+<ParamField body="url" type="string" required>
+  YouTube video URL. Supported formats:
+  - `https://www.youtube.com/watch?v=VIDEO_ID`
+  - `https://youtu.be/VIDEO_ID`
+  - `https://www.youtube.com/embed/VIDEO_ID`
+  - `https://www.youtube.com/shorts/VIDEO_ID`
+</ParamField>
+
+<ParamField body="languages" type="string[]" default="['en']">
+  ISO 639-1 language codes for caption preference (e.g., `["en", "es", "fr"]`). The first available language will be used.
+</ParamField>
+
+## Response
+
+<ResponseField name="status" type="string" required>
+  Response status: `"ok"` on success, `"error"` on failure
+</ResponseField>
+
+<ResponseField name="transcript" type="string">
+  Full transcript text with timestamps in the format:
+  ```
+  [00:18] First line of text
+  [00:23] Second line of text
+  ```
+  Only present when `status` is `"ok"`.
+</ResponseField>
+
+<ResponseField name="video_url" type="string" required>
+  Normalized video URL
+</ResponseField>
+
+<ResponseField name="video_id" type="string" required>
+  11-character YouTube video ID extracted from the URL
+</ResponseField>
+
+<ResponseField name="video_title" type="string">
+  Video title (when available)
+</ResponseField>
+
+<ResponseField name="language" type="string">
+  Language code of the returned transcript (e.g., `"en"`, `"es"`)
+</ResponseField>
+
+<ResponseField name="total_words" type="number">
+  Word count in the transcript
+</ResponseField>
+
+<ResponseField name="method" type="string">
+  Extraction method used: `"yt-dlp"` (fast) or `"browser"` (fallback)
+</ResponseField>
+
+<ResponseField name="available_languages" type="object[]">
+  List of available caption languages when using browser fallback method
+  
+  <Expandable title="Language object properties">
+    <ResponseField name="code" type="string">
+      ISO 639-1 language code
+    </ResponseField>
+    <ResponseField name="name" type="string">
+      Human-readable language name
+    </ResponseField>
+    <ResponseField name="kind" type="string">
+      Caption type: `"manual"` or `"auto-generated"`
+    </ResponseField>
+  </Expandable>
+</ResponseField>
+
+### Error response
+
+When `status` is `"error"`:
+
+<ResponseField name="code" type="number">
+  Error code (e.g., `404` for no captions available)
+</ResponseField>
+
+<ResponseField name="message" type="string">
+  Human-readable error description
+</ResponseField>
+
+## Two-tier extraction approach
+
+### Fast path: yt-dlp
+
+When [yt-dlp](https://github.com/yt-dlp/yt-dlp) is installed, the server uses it for fast, reliable caption extraction:
+
+- No browser needed
+- Completes in 2-5 seconds
+- Supports subtitle formats: JSON3, VTT, SRV3
+- Auto-downloads and parses captions
+
+Install yt-dlp:
+```bash
+pip install yt-dlp
+# or
+brew install yt-dlp
+```
+
+### Fallback: Browser intercept
+
+If yt-dlp is not available, the server:
+
+1. Launches a browser session
+2. Navigates to the video URL
+3. Mutes and plays the video
+4. Intercepts the caption network request (`/api/timedtext`)
+5. Parses the intercepted caption data
+
+This method is slower (10-20 seconds) and can be interrupted by YouTube ads.
+
+## Language selection
+
+Captions are requested in the order specified in the `languages` array. The first available language is returned.
+
+**ISO 639-1 codes:** Use standard two-letter codes (`en`, `es`, `fr`, `de`, `ja`, etc.) or extended codes with region (`en-US`, `pt-BR`).
+
+If the requested language is unavailable, the endpoint returns an error with available languages listed.
+
+## Error codes
+
+| Code | Message | Cause |
+|------|---------|-------|
+| `400` | Could not extract YouTube video ID from URL | Invalid or malformed URL |
+| `400` | Blocked URL scheme | Non-HTTP/HTTPS protocol |
+| `404` | No captions available for this video | Video has no captions/subtitles |
+| `404` | No captions loaded during playback | Browser fallback failed (ad blocked playback) |
+| `404` | Caption data intercepted but could not be parsed | Unknown caption format |
+| `500` | Internal server error | Unexpected failure |
+
+## Examples
+
+### Basic request
+
+```bash
+curl -X POST http://localhost:9377/youtube/transcript \
+  -H 'Content-Type: application/json' \
+  -d '{
+    "url": "https://www.youtube.com/watch?v=dQw4w9WgXcQ"
+  }'
+```
+
+**Response:**
+```json
+{
+  "status": "ok",
+  "transcript": "[00:18] ♪ We're no strangers to love ♪\n[00:23] ♪ You know the rules and so do I ♪\n[00:28] ♪ A full commitment's what I'm thinking of ♪",
+  "video_url": "https://www.youtube.com/watch?v=dQw4w9WgXcQ",
+  "video_id": "dQw4w9WgXcQ",
+  "video_title": "Rick Astley - Never Gonna Give You Up (Official Video)",
+  "language": "en",
+  "total_words": 548,
+  "method": "yt-dlp"
+}
+```
+
+### Multi-language request
+
+```bash
+curl -X POST http://localhost:9377/youtube/transcript \
+  -H 'Content-Type: application/json' \
+  -d '{
+    "url": "https://www.youtube.com/watch?v=dQw4w9WgXcQ",
+    "languages": ["es", "fr", "en"]
+  }'
+```
+
+Returns Spanish captions if available, otherwise falls back to French, then English.
+
+### Error response (no captions)
+
+```json
+{
+  "status": "error",
+  "code": 404,
+  "message": "No captions available for this video",
+  "video_url": "https://www.youtube.com/watch?v=example123",
+  "video_id": "example123",
+  "video_title": "Example Video"
+}
+```
+
+### Error response (invalid URL)
+
+```json
+{
+  "error": "Could not extract YouTube video ID from URL"
+}
+```
+
+## Use cases
+
+- Analyze video content without watching
+- Generate summaries or key insights from video transcripts
+- Index video content for search
+- Accessibility: convert video content to text
+- Multi-language content analysis
+- Research and data extraction from educational videos
+
+## Performance
+
+| Method | Typical Duration | Notes |
+|--------|-----------------|-------|
+| yt-dlp | 2-5 seconds | Recommended for production |
+| Browser fallback | 10-20 seconds | Can fail if YouTube shows ads |
+
+## Limitations
+
+- Videos without captions will return a 404 error
+- Private or age-restricted videos may fail
+- Browser fallback can be interrupted by YouTube ads or anti-bot measures
+- The endpoint does not bypass YouTube's Terms of Service - use responsibly
+
+## See also
+
+- [YouTube Transcripts (yt-dlp documentation)](https://github.com/yt-dlp/yt-dlp#subtitle-options)
+- [Server health endpoint](/api/server/health)

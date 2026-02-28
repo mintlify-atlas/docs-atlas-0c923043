@@ -1,0 +1,299 @@
+---
+title: Navigate page
+description: Navigate to a URL, go back/forward, or refresh the page
+---
+
+## Navigate to URL
+
+```
+POST /tabs/:tabId/navigate
+```
+
+Navigates the tab to a new URL or search query using macros.
+
+### Path parameters
+
+<ParamField path="tabId" type="string" required>
+  The unique identifier of the tab
+</ParamField>
+
+### Body parameters
+
+<ParamField body="userId" type="string" required>
+  User identifier for session isolation
+</ParamField>
+
+<ParamField body="url" type="string">
+  Direct URL to navigate to (e.g., `https://example.com`). Either `url` or `macro` is required.
+</ParamField>
+
+<ParamField body="macro" type="string">
+  Search macro name (e.g., `@google_search`, `@youtube_search`). Either `url` or `macro` is required.
+</ParamField>
+
+<ParamField body="query" type="string">
+  Search query to use with macro (required if `macro` is provided)
+</ParamField>
+
+<ParamField body="sessionKey" type="string">
+  Session key for grouping tabs (legacy parameter: `listItemId` also accepted)
+</ParamField>
+
+### Response
+
+<ResponseField name="ok" type="boolean">
+  Always `true` on success
+</ResponseField>
+
+<ResponseField name="tabId" type="string">
+  The tab identifier
+</ResponseField>
+
+<ResponseField name="url" type="string">
+  The final URL after navigation (may differ from requested URL due to redirects)
+</ResponseField>
+
+<ResponseField name="refsAvailable" type="boolean">
+  Whether element references were successfully built for the loaded page
+</ResponseField>
+
+### Search macros
+
+Macros expand to search URLs for popular websites:
+
+| Macro | Expands to |
+|-------|------------|
+| `@google_search` | `https://www.google.com/search?q={query}` |
+| `@youtube_search` | `https://www.youtube.com/results?search_query={query}` |
+| `@amazon_search` | `https://www.amazon.com/s?k={query}` |
+| `@reddit_search` | `https://www.reddit.com/search.json?q={query}&limit=25` |
+| `@wikipedia_search` | `https://en.wikipedia.org/wiki/Special:Search?search={query}` |
+| `@twitter_search` | `https://twitter.com/search?q={query}` |
+| `@yelp_search` | `https://www.yelp.com/search?find_desc={query}` |
+| `@linkedin_search` | `https://www.linkedin.com/search/results/all/?keywords={query}` |
+| `@spotify_search` | `https://open.spotify.com/search/{query}` |
+| `@netflix_search` | `https://www.netflix.com/search?q={query}` |
+| `@instagram_search` | `https://www.instagram.com/explore/tags/{query}` |
+| `@tiktok_search` | `https://www.tiktok.com/search?q={query}` |
+| `@twitch_search` | `https://www.twitch.tv/search?term={query}` |
+| `@reddit_subreddit` | `https://www.reddit.com/r/{query}.json?limit=25` |
+
+### Auto-tab creation
+
+If the specified `tabId` doesn't exist, a new tab is automatically created (up to session limits). This allows simplified workflows without separate `/tabs` POST.
+
+### Navigation behavior
+
+- Waits for `domcontentloaded` event (default timeout: 30s)
+- Attempts to wait for network idle (5s timeout, continues if missed)
+- Waits for framework hydration (React/Next.js/Vue detection)
+- Auto-dismisses common consent/privacy dialogs
+- Builds element references after page load
+- Resets cached snapshots and refs
+
+---
+
+## Go back
+
+```
+POST /tabs/:tabId/back
+```
+
+Navigates to the previous page in the tab's history.
+
+### Path parameters
+
+<ParamField path="tabId" type="string" required>
+  The unique identifier of the tab
+</ParamField>
+
+### Body parameters
+
+<ParamField body="userId" type="string" required>
+  User identifier for session isolation
+</ParamField>
+
+### Response
+
+<ResponseField name="ok" type="boolean">
+  Always `true` on success
+</ResponseField>
+
+<ResponseField name="url" type="string">
+  The URL after navigating back
+</ResponseField>
+
+---
+
+## Go forward
+
+```
+POST /tabs/:tabId/forward
+```
+
+Navigates to the next page in the tab's history.
+
+### Path parameters
+
+<ParamField path="tabId" type="string" required>
+  The unique identifier of the tab
+</ParamField>
+
+### Body parameters
+
+<ParamField body="userId" type="string" required>
+  User identifier for session isolation
+</ParamField>
+
+### Response
+
+<ResponseField name="ok" type="boolean">
+  Always `true` on success
+</ResponseField>
+
+<ResponseField name="url" type="string">
+  The URL after navigating forward
+</ResponseField>
+
+---
+
+## Refresh page
+
+```
+POST /tabs/:tabId/refresh
+```
+
+Reloads the current page.
+
+### Path parameters
+
+<ParamField path="tabId" type="string" required>
+  The unique identifier of the tab
+</ParamField>
+
+### Body parameters
+
+<ParamField body="userId" type="string" required>
+  User identifier for session isolation
+</ParamField>
+
+### Response
+
+<ResponseField name="ok" type="boolean">
+  Always `true` on success
+</ResponseField>
+
+<ResponseField name="url" type="string">
+  The current URL (unchanged)
+</ResponseField>
+
+---
+
+## Error codes
+
+- `400` - Missing required parameter or invalid URL scheme (only http/https allowed)
+- `404` - Tab not found
+- `429` - Maximum tabs per session reached (when auto-creating tab)
+- `500` - Navigation failed (timeout, network error)
+
+## Examples
+
+### Navigate to direct URL
+
+```bash
+curl -X POST http://localhost:9377/tabs/abc123/navigate \
+  -H "Content-Type: application/json" \
+  -d '{
+    "userId": "agent1",
+    "url": "https://example.com"
+  }'
+```
+
+```json
+{
+  "ok": true,
+  "tabId": "abc123",
+  "url": "https://example.com/",
+  "refsAvailable": true
+}
+```
+
+### Search using macro
+
+```bash
+curl -X POST http://localhost:9377/tabs/abc123/navigate \
+  -H "Content-Type: application/json" \
+  -d '{
+    "userId": "agent1",
+    "macro": "@google_search",
+    "query": "headless browser automation"
+  }'
+```
+
+```json
+{
+  "ok": true,
+  "tabId": "abc123",
+  "url": "https://www.google.com/search?q=headless+browser+automation",
+  "refsAvailable": true
+}
+```
+
+### Go back in history
+
+```bash
+curl -X POST http://localhost:9377/tabs/abc123/back \
+  -H "Content-Type: application/json" \
+  -d '{
+    "userId": "agent1"
+  }'
+```
+
+```json
+{
+  "ok": true,
+  "url": "https://example.com"
+}
+```
+
+### Go forward in history
+
+```bash
+curl -X POST http://localhost:9377/tabs/abc123/forward \
+  -H "Content-Type: application/json" \
+  -d '{
+    "userId": "agent1"
+  }'
+```
+
+```json
+{
+  "ok": true,
+  "url": "https://example.com/page2"
+}
+```
+
+### Refresh page
+
+```bash
+curl -X POST http://localhost:9377/tabs/abc123/refresh \
+  -H "Content-Type: application/json" \
+  -d '{
+    "userId": "agent1"
+  }'
+```
+
+```json
+{
+  "ok": true,
+  "url": "https://example.com"
+}
+```
+
+## Best practices
+
+1. **Use macros for search**: Simpler and more maintainable than manually constructing URLs
+2. **Check `refsAvailable`**: If `false`, the page may still be loading - wait and retry `/snapshot`
+3. **Handle redirects**: The returned `url` may differ from the requested URL
+4. **Allow timeout buffer**: Complex sites may take 10-20s to fully load
+5. **Call `/snapshot` after navigation**: Element refs are rebuilt but not returned in navigate response

@@ -1,0 +1,471 @@
+---
+title: Session management
+description: Multi-user isolation, cookie storage, and session lifecycle
+---
+
+Camofox provides complete session isolation for multi-user browser automation. Each user gets their own browser context with isolated cookies, localStorage, and browsing state.
+
+## Architecture
+
+Sessions follow a three-level hierarchy:
+
+```
+Browser Instance (shared)
+└── User Context (per userId)
+    └── Tab Group (per sessionKey)
+        └── Tab (per tabId)
+```
+
+### Visual diagram
+
+```
+┌─────────────────────────────────────────────┐
+│ Browser (Camoufox)                          │
+│                                             │
+│  ┌────────────────────────────────────┐    │
+│  │ Context: user_alice                │    │
+│  │ - Cookies: {session_id: "abc"}     │    │
+│  │ - localStorage: {...}              │    │
+│  │                                    │    │
+│  │  ┌───────────────────────────┐    │    │
+│  │  │ Tab Group: "task_123"     │    │    │
+│  │  │  - Tab 1: google.com      │    │    │
+│  │  │  - Tab 2: wikipedia.org   │    │    │
+│  │  └───────────────────────────┘    │    │
+│  │                                    │    │
+│  │  ┌───────────────────────────┐    │    │
+│  │  │ Tab Group: "task_456"     │    │    │
+│  │  │  - Tab 3: github.com      │    │    │
+│  │  └───────────────────────────┘    │    │
+│  └────────────────────────────────────┘    │
+│                                             │
+│  ┌────────────────────────────────────┐    │
+│  │ Context: user_bob                  │    │
+│  │ - Cookies: {session_id: "xyz"}     │    │
+│  │ - localStorage: {...}              │    │
+│  │                                    │    │
+│  │  ┌───────────────────────────┐    │    │
+│  │  │ Tab Group: "default"      │    │    │
+│  │  │  - Tab 1: amazon.com      │    │    │
+│  │  └───────────────────────────┘    │    │
+│  └────────────────────────────────────┘    │
+└─────────────────────────────────────────────┘
+```
+
+## userId vs sessionKey
+
+### userId (Context level)
+
+**Purpose**: Isolates users from each other. Each userId gets a dedicated browser context.
+
+**Isolation**:
+- Separate cookies
+- Separate localStorage/sessionStorage
+- Separate browsing history
+- Separate cache
+
+**Example use cases**:
+- Different end users in a multi-tenant system
+- Different accounts (personal vs work)
+- A/B testing with separate profiles
+
+From server.js:425-452:
+```javascript
+async function getSession(userId) {
+  const key = normalizeUserId(userId);
+  let session = sessions.get(key);
+  if (!session) {
+    const context = await browser.newContext({
+      viewport: { width: 1280, height: 720 },
+      permissions: ['geolocation'],
+    });
+    session = { context, tabGroups: new Map(), lastAccess: Date.now() };
+    sessions.set(key, session);
+  }
+  return session;
+}
+```
+
+### sessionKey (Tab group level)
+
+**Purpose**: Organizes tabs within a user's context by task/conversation/workflow.
+
+**Isolation**: 
+- **Shares cookies** with other tab groups in the same userId
+- Logical grouping only (not security boundary)
+- Allows bulk tab operations (close all tabs in a task)
+
+**Legacy alias**: Previously called `listItemId`. Both names are accepted for backward compatibility.
+
+From server.js:834-836:
+```javascript
+const { userId, sessionKey, listItemId, url } = req.body;
+// Accept both sessionKey (preferred) and listItemId (legacy)
+const resolvedSessionKey = sessionKey || listItemId;
+```
+
+**Example use cases**:
+- Grouping tabs by conversation thread
+- Organizing research tasks
+- Batch closing related tabs
+
+<Note>
+**Key distinction**: userId isolates cookies, sessionKey organizes tabs. Use userId for security, sessionKey for organization.
+</Note>
+
+## Cookie and storage isolation
+
+### Per-user cookies
+
+Each userId gets its own cookie jar:
+
+```bash
+# User alice logs into site A
+POST /tabs {"userId": "alice", "sessionKey": "task1", "url": "https://site-a.com/login"}
+POST /tabs/:tabId/type {"userId": "alice", "ref": "e1", "text": "alice@example.com"}
+POST /tabs/:tabId/click {"userId": "alice", "ref": "e2"}  # Submit
+
+# User bob logs into site A (separate cookies)
+POST /tabs {"userId": "bob", "sessionKey": "task1", "url": "https://site-a.com/login"}
+POST /tabs/:tabId/type {"userId": "bob", "ref": "e1", "text": "bob@example.com"}
+POST /tabs/:tabId/click {"userId": "bob", "ref": "e2"}  # Submit
+```
+
+Alice and Bob maintain separate sessions on site-a.com.
+
+### Cookie import (authenticated browsing)
+
+<Warning>
+Cookie import is **disabled by default** for security. Set `CAMOFOX_API_KEY` to enable.
+</Warning>
+
+From server.js:102-108:
+```javascript
+if (!CONFIG.apiKey) {
+  return res.status(403).json({
+    error: 'Cookie import is disabled. Set CAMOFOX_API_KEY to enable this endpoint.',
+  });
+}
+```
+
+When enabled, import cookies to pre-authenticate a user:
+
+```bash
+POST /sessions/:userId/cookies
+Authorization: Bearer YOUR_API_KEY
+Content-Type: application/json
+
+{
+  "cookies": [
+    {
+      "name": "session_id",
+      "value": "abc123",
+      "domain": ".example.com",
+      "path": "/",
+      "secure": true,
+      "httpOnly": true
+    }
+  ]
+}
+```
+
+**Security checks**:
+- Requires Bearer token matching `CAMOFOX_API_KEY`
+- Max 500 cookies per request
+- Only allows: name, value, domain, path, expires, httpOnly, secure, sameSite
+- Strips unknown fields
+
+From server.js:150-157:
+```javascript
+const allowedFields = ['name', 'value', 'domain', 'path', 'expires', 'httpOnly', 'secure', 'sameSite'];
+const sanitized = cookies.map(c => {
+  const clean = {};
+  for (const k of allowedFields) {
+    if (c[k] !== undefined) clean[k] = c[k];
+  }
+  return clean;
+});
+```
+
+## Session timeout
+
+From server.js:176:
+```javascript
+const SESSION_TIMEOUT_MS = 30 * 60 * 1000;  // 30 minutes
+```
+
+### How timeout works
+
+1. **lastAccess tracking**: Every API call updates `session.lastAccess = Date.now()`
+2. **Cleanup interval**: Every 60 seconds, server checks for stale sessions
+3. **Auto-close**: Sessions idle for 30+ minutes are closed and removed
+
+From server.js:1470-1483:
+```javascript
+setInterval(() => {
+  const now = Date.now();
+  for (const [userId, session] of sessions) {
+    if (now - session.lastAccess > SESSION_TIMEOUT_MS) {
+      session.context.close().catch(() => {});
+      sessions.delete(userId);
+      log('info', 'session expired', { userId });
+    }
+  }
+  if (sessions.size === 0) {
+    scheduleBrowserIdleShutdown();
+  }
+}, 60_000);
+```
+
+<Tip>
+For long-running tasks, make periodic API calls (like snapshot or health check) to keep the session alive.
+</Tip>
+
+## Resource limits
+
+From server.js:176-180:
+```javascript
+const MAX_SESSIONS = 100;              // Max concurrent users
+const MAX_TABS_PER_SESSION = 20;       // Max tabs per userId
+const MAX_TABS_GLOBAL = 200;           // Max tabs across all users
+const MAX_CONCURRENT_PER_USER = 3;     // Max parallel operations per userId
+```
+
+### Limits enforcement
+
+**Max sessions**:
+```javascript
+if (sessions.size >= MAX_SESSIONS) {
+  throw new Error('Maximum concurrent sessions reached');
+}
+```
+
+**Max tabs per session**:
+- When limit reached, Camofox **recycles the oldest tab** instead of rejecting
+- Oldest = tab with lowest `toolCalls` counter
+
+From server.js:890-911:
+```javascript
+if (getTotalTabCount() >= MAX_TABS_GLOBAL || sessionTabs >= MAX_TABS_PER_SESSION) {
+  // Reuse oldest tab in session instead of rejecting
+  let oldestTab = null;
+  for (const [tid, ts] of group) {
+    if (!oldestTab || ts.toolCalls < oldestTab.toolCalls) {
+      oldestTab = ts;
+      oldestTabId = tid;
+    }
+  }
+  if (oldestTab) {
+    tabState = oldestTab;
+    group.set(tabId, tabState);  // Reassign to new tabId
+    log('info', 'tab recycled (limit reached)', { tabId, recycledFrom: oldestTabId });
+  }
+}
+```
+
+<Note>
+Tab recycling ensures automation never fails due to tab limits - the oldest idle tab is reused transparently.
+</Note>
+
+## Session cleanup endpoints
+
+### Close single tab
+
+```bash
+DELETE /tabs/:tabId?userId=user1
+```
+
+From server.js:1409-1428:
+- Closes page
+- Removes from tab group
+- Cleans up tab lock
+- If group becomes empty, deletes group
+
+### Close tab group
+
+```bash
+DELETE /tabs/group/:sessionKey
+{"userId": "user1"}
+```
+
+Closes all tabs in a sessionKey:
+
+```javascript
+for (const [tabId, tabState] of group) {
+  await safePageClose(tabState.page);
+  tabLocks.delete(tabId);
+}
+session.tabGroups.delete(sessionKey);
+```
+
+### Close entire user session
+
+```bash
+DELETE /sessions/:userId
+```
+
+From server.js:1452-1467:
+- Closes browser context (all tabs + cookies)
+- Removes session from memory
+- If last session, triggers browser idle shutdown timer
+
+```javascript
+const session = sessions.get(userId);
+if (session) {
+  await session.context.close();
+  sessions.delete(userId);
+}
+if (sessions.size === 0) scheduleBrowserIdleShutdown();
+```
+
+<Warning>
+Closing a session **permanently deletes** all cookies and browsing data for that userId. There is no undo.
+</Warning>
+
+## Browser lifecycle
+
+### Lazy launch
+
+Browser launches only when first tab is created:
+
+```javascript
+async function ensureBrowser() {
+  if (browser && browser.isConnected()) return browser;
+  if (browserLaunchPromise) return browserLaunchPromise;
+  browserLaunchPromise = launchBrowserInstance();
+  return browserLaunchPromise;
+}
+```
+
+### Idle shutdown
+
+From server.js:301-317:
+```javascript
+const BROWSER_IDLE_TIMEOUT_MS = 5 * 60 * 1000;  // 5 minutes
+
+function scheduleBrowserIdleShutdown() {
+  if (sessions.size === 0 && browser) {
+    browserIdleTimer = setTimeout(async () => {
+      if (sessions.size === 0 && browser) {
+        log('info', 'browser idle shutdown (no sessions)');
+        await browser.close();
+        browser = null;
+      }
+    }, BROWSER_IDLE_TIMEOUT_MS);
+  }
+}
+```
+
+**Behavior**:
+- When last session closes, start 5-minute countdown
+- If new session created, cancel countdown
+- After 5 minutes of zero sessions, close browser to free resources
+
+### Health recovery
+
+From server.js:344-367:
+```javascript
+async function restartBrowser(reason) {
+  log('error', 'restarting browser', { reason });
+  // Close all sessions
+  for (const [, session] of sessions) {
+    await session.context.close().catch(() => {});
+  }
+  sessions.clear();
+  // Restart browser
+  if (browser) await browser.close().catch(() => {});
+  browser = null;
+  await ensureBrowser();
+}
+```
+
+Browser auto-restarts if:
+- 3+ consecutive navigation failures
+- Browser becomes disconnected
+- Critical internal error
+
+## Concurrency control
+
+From server.js:232-264:
+```javascript
+const MAX_CONCURRENT_PER_USER = 3;
+
+async function withUserLimit(userId, operation) {
+  let state = userConcurrency.get(userId);
+  if (!state) {
+    state = { active: 0, queue: [] };
+    userConcurrency.set(userId, state);
+  }
+  if (state.active >= MAX_CONCURRENT_PER_USER) {
+    // Queue operation until slot available
+    await new Promise((resolve, reject) => {
+      const timer = setTimeout(() => reject(new Error('User concurrency limit reached')), 30000);
+      state.queue.push(() => { clearTimeout(timer); resolve(); });
+    });
+  }
+  state.active++;
+  try {
+    return await operation();
+  } finally {
+    state.active--;
+    if (state.queue.length > 0) {
+      const next = state.queue.shift();
+      next();
+    }
+  }
+}
+```
+
+**Purpose**: Prevents a single user from monopolizing browser resources with 10+ parallel operations.
+
+**Behavior**:
+- Max 3 operations per userId can run simultaneously
+- Excess operations queue for up to 30 seconds
+- After 30s, returns error: "User concurrency limit reached, try again"
+
+<Tip>
+For bulk automation, process tasks sequentially or across multiple userIds to avoid queueing delays.
+</Tip>
+
+## Example workflows
+
+### Multi-user isolation
+
+```bash
+# User 1: Login to Site A
+POST /tabs {"userId": "user1", "sessionKey": "login", "url": "https://site-a.com/login"}
+POST /tabs/:tabId/type {"userId": "user1", "ref": "e1", "text": "user1@example.com"}
+POST /tabs/:tabId/click {"userId": "user1", "ref": "e2"}
+
+# User 2: Login to Site A (isolated cookies)
+POST /tabs {"userId": "user2", "sessionKey": "login", "url": "https://site-a.com/login"}
+POST /tabs/:tabId/type {"userId": "user2", "ref": "e1", "text": "user2@example.com"}
+POST /tabs/:tabId/click {"userId": "user2", "ref": "e2"}
+
+# Both users are logged in separately
+```
+
+### Task-based tab groups
+
+```bash
+# Research task: Multiple tabs, same sessionKey
+POST /tabs {"userId": "researcher", "sessionKey": "climate_study", "url": "https://google.com"}
+POST /tabs {"userId": "researcher", "sessionKey": "climate_study", "url": "https://wikipedia.org"}
+POST /tabs {"userId": "researcher", "sessionKey": "climate_study", "url": "https://scholar.google.com"}
+
+# Shopping task: Different sessionKey, shares cookies
+POST /tabs {"userId": "researcher", "sessionKey": "shopping", "url": "https://amazon.com"}
+
+# Cleanup: Close all climate study tabs
+DELETE /tabs/group/climate_study {"userId": "researcher"}
+```
+
+### Session cleanup
+
+```bash
+# Close all tabs and cookies for a user
+DELETE /sessions/user1
+
+# User can immediately create new session
+POST /tabs {"userId": "user1", "sessionKey": "new_task", "url": "https://google.com"}
+```

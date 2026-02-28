@@ -1,0 +1,82 @@
+---
+title: Create tab
+description: Create a new browser tab for a user session
+---
+
+## POST /tabs
+
+Creates a new browser tab within a user's session. Tabs are organized by `sessionKey` (also called `listItemId` for backward compatibility) to group related browsing tasks.
+
+## Authentication
+
+All tab operations require a `userId` in the request body to identify which user session owns the tab.
+
+## Request
+
+### Body parameters
+
+<ParamField body="userId" type="string" required>
+  User identifier for session isolation. Sessions maintain separate cookies, storage, and browser contexts.
+</ParamField>
+
+<ParamField body="sessionKey" type="string" required>
+  Session key to group related tabs together (e.g., by conversation or task). Legacy name: `listItemId`.
+</ParamField>
+
+<ParamField body="listItemId" type="string">
+  **Deprecated.** Use `sessionKey` instead. Accepted for backward compatibility.
+</ParamField>
+
+<ParamField body="url" type="string">
+  Initial URL to navigate to after creating the tab. Must use `http:` or `https:` protocol. If omitted, tab opens to `about:blank`.
+</ParamField>
+
+## Response
+
+<ResponseField name="tabId" type="string">
+  UUID identifier for the newly created tab. Use this in all subsequent tab operations.
+</ResponseField>
+
+<ResponseField name="url" type="string">
+  Current URL of the tab after creation.
+</ResponseField>
+
+## Example
+
+```bash
+curl -X POST http://localhost:9377/tabs \
+  -H "Content-Type: application/json" \
+  -d '{
+    "userId": "agent1",
+    "sessionKey": "task123",
+    "url": "https://example.com"
+  }'
+```
+
+**Response:**
+
+```json
+{
+  "tabId": "f47ac10b-58cc-4372-a567-0e02b2c3d479",
+  "url": "https://example.com"
+}
+```
+
+## Error responses
+
+| Status | Error | Cause |
+|--------|-------|-------|
+| 400 | `userId and sessionKey required` | Missing required fields |
+| 400 | `Invalid URL: <url>` | Malformed URL |
+| 400 | `Blocked URL scheme: <scheme>` | Non-HTTP/HTTPS protocol |
+| 429 | `Maximum tabs per session reached` | Session has 10+ tabs (configurable via `MAX_TABS_PER_SESSION`) |
+| 500 | Internal server error | Browser launch failure or unexpected error |
+
+## Notes
+
+- Maximum tabs per session is configurable (default: 10 via `MAX_TABS_PER_SESSION`)
+- Global tab limit across all users is 100 (configurable via `MAX_TABS_GLOBAL`)
+- Each `userId` gets an isolated browser context with separate cookies and storage
+- Tabs within the same `sessionKey` can be closed together using `DELETE /tabs/group/:groupId`
+- URL navigation timeout is 30 seconds
+- Sessions auto-expire after 30 minutes of inactivity (configurable via `SESSION_TIMEOUT_MS`)

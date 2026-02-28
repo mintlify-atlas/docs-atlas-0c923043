@@ -1,0 +1,130 @@
+---
+title: Close tabs
+description: Close a single tab or an entire tab group
+---
+
+## DELETE /tabs/:id
+
+Closes a specific browser tab and releases associated resources. Safe to call even if the tab doesn't exist.
+
+## Authentication
+
+Requires `userId` in the request body to verify ownership of the tab.
+
+## Request
+
+### Path parameters
+
+<ParamField path="id" type="string" required>
+  The `tabId` to close.
+</ParamField>
+
+### Body parameters
+
+<ParamField body="userId" type="string" required>
+  User identifier. Must match the user who owns the tab.
+</ParamField>
+
+## Response
+
+<ResponseField name="ok" type="boolean">
+  Always `true`. Returns success even if tab was already closed or doesn't exist.
+</ResponseField>
+
+## Example
+
+```bash
+curl -X DELETE http://localhost:9377/tabs/f47ac10b-58cc-4372-a567-0e02b2c3d479 \
+  -H "Content-Type: application/json" \
+  -d '{"userId": "agent1"}'
+```
+
+**Response:**
+
+```json
+{
+  "ok": true
+}
+```
+
+---
+
+## DELETE /tabs/group/:groupId
+
+Closes all tabs within a session group (identified by `sessionKey` or legacy `listItemId`). Useful for cleaning up all tabs associated with a task or conversation.
+
+## Authentication
+
+Requires `userId` in the request body to verify ownership.
+
+## Request
+
+### Path parameters
+
+<ParamField path="groupId" type="string" required>
+  The `sessionKey` (or `listItemId`) identifying the tab group to close.
+</ParamField>
+
+### Body parameters
+
+<ParamField body="userId" type="string" required>
+  User identifier. Must match the user who owns the tab group.
+</ParamField>
+
+## Response
+
+<ResponseField name="ok" type="boolean">
+  Always `true`. Returns success even if the group was empty or doesn't exist.
+</ResponseField>
+
+## Example
+
+```bash
+curl -X DELETE http://localhost:9377/tabs/group/task123 \
+  -H "Content-Type: application/json" \
+  -d '{"userId": "agent1"}'
+```
+
+**Response:**
+
+```json
+{
+  "ok": true
+}
+```
+
+## Error responses
+
+| Status | Error | Cause |
+|--------|-------|-------|
+| 500 | Internal server error | Page close operation failed |
+
+## Notes
+
+### Cleanup behavior
+
+- Closing a tab removes it from the session's tab group
+- If closing the last tab in a group, the entire group is deleted
+- Tab locks are released immediately upon closure
+- Page close has a 5-second timeout to prevent hangs (`PAGE_CLOSE_TIMEOUT_MS`)
+
+### Session cleanup
+
+- If a session has zero tabs remaining, it becomes eligible for cleanup
+- Sessions expire after 30 minutes of inactivity (configurable via `SESSION_TIMEOUT_MS`)
+- When all sessions are closed, the browser enters idle mode and shuts down after 5 minutes (configurable via `BROWSER_IDLE_TIMEOUT_MS`)
+
+### Safe to call multiple times
+
+- Both endpoints are idempotent - calling them on already-closed tabs/groups returns success
+- No error is thrown if the tab or group doesn't exist
+
+### To close all tabs for a user
+
+Use the session endpoint instead:
+
+```bash
+curl -X DELETE http://localhost:9377/sessions/agent1
+```
+
+This closes the entire browser context, all tabs, and clears all cookies/storage for the user.

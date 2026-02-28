@@ -1,0 +1,163 @@
+---
+title: Type text
+description: Type text into an input field or textarea
+---
+
+## Endpoint
+
+```
+POST /tabs/:tabId/type
+```
+
+Types text into an input element using either an element reference from the snapshot or a CSS selector.
+
+## Authentication
+
+No authentication required. All endpoints use `userId` for session isolation.
+
+## Path parameters
+
+<ParamField path="tabId" type="string" required>
+  The unique identifier of the tab
+</ParamField>
+
+## Body parameters
+
+<ParamField body="userId" type="string" required>
+  User identifier for session isolation
+</ParamField>
+
+<ParamField body="ref" type="string">
+  Element reference from snapshot (e.g., `e1`, `e2`). Either `ref` or `selector` is required.
+</ParamField>
+
+<ParamField body="selector" type="string">
+  CSS selector for the target element. Either `ref` or `selector` is required.
+</ParamField>
+
+<ParamField body="text" type="string" required>
+  The text to type into the element
+</ParamField>
+
+<ParamField body="pressEnter" type="boolean" default="false">
+  Whether to press Enter after typing the text (useful for search boxes)
+</ParamField>
+
+<ParamField body="timeout" type="integer" default="10000">
+  Maximum time in milliseconds to wait for the element
+</ParamField>
+
+## Response
+
+<ResponseField name="ok" type="boolean">
+  Always `true` on success
+</ResponseField>
+
+## Behavior
+
+The `/type` endpoint uses Playwright's `.fill()` method, which:
+
+1. Clears the existing value in the input field
+2. Types the new text
+3. Triggers appropriate input events (`input`, `change`, etc.)
+4. Works with `<input>`, `<textarea>`, and `contenteditable` elements
+
+If `pressEnter` is true, the endpoint will additionally call `/press` with `key=Enter` after typing.
+
+## Special characters
+
+The `text` parameter supports all Unicode characters. For special keys (Tab, Escape, Arrow keys, etc.), use the `/press` endpoint instead.
+
+## Error codes
+
+- `400` - Missing required parameter (`userId`, `text`, or both `ref` and `selector`)
+- `404` - Tab not found
+- `500` - Type failed (element not found, timeout, unknown ref)
+
+## Error messages
+
+- **Unknown ref**: `Unknown ref: e99`
+- **Element not found**: `Timeout 10000ms exceeded`
+- **Element not editable**: `Element is not an input, textarea, or contenteditable`
+
+## Examples
+
+### Type into search box by reference
+
+```bash
+curl -X POST http://localhost:9377/tabs/abc123/type \
+  -H "Content-Type: application/json" \
+  -d '{
+    "userId": "agent1",
+    "ref": "e3",
+    "text": "headless browser automation"
+  }'
+```
+
+```json
+{
+  "ok": true
+}
+```
+
+### Type and submit search
+
+```bash
+curl -X POST http://localhost:9377/tabs/abc123/type \
+  -H "Content-Type: application/json" \
+  -d '{
+    "userId": "agent1",
+    "ref": "e3",
+    "text": "weather forecast",
+    "pressEnter": true
+  }'
+```
+
+```json
+{
+  "ok": true
+}
+```
+
+### Type by CSS selector
+
+```bash
+curl -X POST http://localhost:9377/tabs/abc123/type \
+  -H "Content-Type: application/json" \
+  -d '{
+    "userId": "agent1",
+    "selector": "input[name=email]",
+    "text": "user@example.com"
+  }'
+```
+
+### Type with custom timeout
+
+```bash
+curl -X POST http://localhost:9377/tabs/abc123/type \
+  -H "Content-Type: application/json" \
+  -d '{
+    "userId": "agent1",
+    "ref": "e5",
+    "text": "delayed input",
+    "timeout": 15000
+  }'
+```
+
+## Related endpoints
+
+- **POST /tabs/:tabId/press** - Press special keys (Enter, Tab, Escape, etc.)
+- **POST /tabs/:tabId/click** - Click an element before typing
+- **GET /tabs/:tabId/snapshot** - Get element references for interactive elements
+
+## Tab locking
+
+Type operations are serialized per tab to prevent race conditions. If another operation is in progress, the request will wait up to 30 seconds before proceeding.
+
+## Best practices
+
+1. Always call `/snapshot` after navigation to get fresh element refs
+2. Use `ref` (not `selector`) when possible - refs target semantic roles (textbox, searchbox)
+3. For search forms, use `pressEnter: true` instead of separate click on submit button
+4. Clear existing values are automatically cleared before typing
+5. For multi-step forms, wait for page ready after each submit

@@ -1,0 +1,340 @@
+---
+title: YouTube transcript extraction
+description: Extract captions from YouTube videos using yt-dlp or browser-based fallback
+---
+
+Camofox can extract transcripts (closed captions) from any YouTube video without an API key. This is useful for agents that need to process video content.
+
+## Endpoint
+
+**POST** `/youtube/transcript`
+
+Extracts captions from a YouTube video URL.
+
+### Request
+
+```json
+{
+  "url": "https://www.youtube.com/watch?v=dQw4w9WgXcQ",
+  "languages": ["en"]
+}
+```
+
+**Parameters:**
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `url` | string | Yes | Full YouTube URL (supports `youtube.com/watch`, `youtu.be`, `youtube.com/embed`, `youtube.com/shorts`) |
+| `languages` | string[] | No | Preferred caption languages (ISO 639-1 codes). Defaults to `["en"]`. First available language is used. |
+
+### Response (success)
+
+```json
+{
+  "status": "ok",
+  "transcript": "[00:18] ♪ We're no strangers to love ♪\n[00:22] ♪ You know the rules and so do I ♪\n...",
+  "video_url": "https://www.youtube.com/watch?v=dQw4w9WgXcQ",
+  "video_id": "dQw4w9WgXcQ",
+  "video_title": "Rick Astley - Never Gonna Give You Up (Official Video)",
+  "language": "en",
+  "total_words": 548
+}
+```
+
+### Response (error)
+
+```json
+{
+  "status": "error",
+  "code": 404,
+  "message": "No captions available for this video",
+  "video_url": "https://www.youtube.com/watch?v=abc123",
+  "video_id": "abc123",
+  "title": "Video Title"
+}
+```
+
+## Usage examples
+
+### curl
+
+```bash
+curl -X POST http://localhost:9377/youtube/transcript \
+  -H 'Content-Type: application/json' \
+  -d '{
+    "url": "https://www.youtube.com/watch?v=dQw4w9WgXcQ",
+    "languages": ["en"]
+  }'
+```
+
+### Node.js
+
+```javascript
+const response = await fetch('http://localhost:9377/youtube/transcript', {
+  method: 'POST',
+  headers: { 'Content-Type': 'application/json' },
+  body: JSON.stringify({
+    url: 'https://www.youtube.com/watch?v=dQw4w9WgXcQ',
+    languages: ['en']
+  })
+});
+
+const data = await response.json();
+if (data.status === 'ok') {
+  console.log(data.transcript);
+  console.log(`Total words: ${data.total_words}`);
+}
+```
+
+### Python
+
+```python
+import requests
+
+response = requests.post(
+    'http://localhost:9377/youtube/transcript',
+    json={
+        'url': 'https://www.youtube.com/watch?v=dQw4w9WgXcQ',
+        'languages': ['en']
+    }
+)
+
+data = response.json()
+if data['status'] == 'ok':
+    print(data['transcript'])
+    print(f"Total words: {data['total_words']}")
+```
+
+## How it works
+
+Camofox uses a two-tier approach:
+
+1. **Fast path (yt-dlp)**: If `yt-dlp` is installed, use it to download captions directly. No browser needed.
+2. **Fallback (browser)**: If `yt-dlp` is unavailable, launch a headless browser, play the video, and intercept the timedtext API response.
+
+### Fast path: yt-dlp
+
+When `yt-dlp` is available (`lib/youtube.js:104-187`):
+
+1. Validate and normalize the YouTube URL
+2. Fetch video title: `yt-dlp --skip-download --print '%(title)s' <url>`
+3. Download captions: `yt-dlp --skip-download --write-sub --write-auto-sub --sub-lang <lang> --sub-format json3 <url>`
+4. Parse the downloaded `.json3`, `.vtt`, or `.srv3` file
+5. Format as timestamped text: `[MM:SS] <text>`
+
+**Advantages:**
+- Fast (no browser launch)
+- No ad pre-rolls
+- Works for age-restricted videos (if yt-dlp supports it)
+
+**Disadvantages:**
+- Requires `yt-dlp` binary installed
+
+### Fallback: browser intercept
+
+When `yt-dlp` is not installed (`server.js:736-814`):
+
+1. Create a temporary browser session (`__yt_transcript__`)
+2. Navigate to the video URL
+3. Inject script to mute audio: `video.volume = 0; video.muted = true`
+4. Register response listener for `/api/timedtext` requests
+5. Play the video to trigger caption loading
+6. Intercept the caption response (JSON3, VTT, or XML format)
+7. Parse and format the transcript
+
+**Advantages:**
+- No dependencies (uses existing browser)
+
+**Disadvantages:**
+- Slower (browser launch + video load)
+- May fail if video has long ad pre-roll
+- Less reliable for age-restricted content
+
+<Warning>
+The browser fallback may fail for videos with long ad pre-rolls because the caption API is only triggered after the actual video starts playing. Use yt-dlp for production workloads.
+</Warning>
+
+## Language selection
+
+YouTube videos may have multiple caption tracks:
+
+- **Manual captions**: Created by the uploader (high quality)
+- **Auto-generated captions**: Created by YouTube's speech recognition (may have errors)
+
+The `languages` parameter specifies preferred languages in priority order:
+
+```json
+{
+  "url": "https://www.youtube.com/watch?v=abc123",
+  "languages": ["es", "en"]
+}
+```
+
+This requests Spanish captions first, falling back to English if Spanish is unavailable.
+
+### Language codes
+
+Use ISO 639-1 two-letter codes:
+
+- `en` - English
+- `es` - Spanish
+- `fr` - French
+- `de` - German
+- `ja` - Japanese
+- `ko` - Korean
+- `zh` - Chinese
+
+For region-specific variants, use extended codes:
+
+- `en-US` - English (United States)
+- `en-GB` - English (United Kingdom)
+- `zh-CN` - Chinese (Simplified)
+- `zh-TW` - Chinese (Traditional)
+
+## Caption format parsing
+
+Camofox supports three YouTube caption formats:
+
+### JSON3 format
+
+```json
+{
+  "events": [
+    {
+      "tStartMs": 18000,
+      "dDurationMs": 4000,
+      "segs": [
+        {"utf8": "♪ We're no strangers to love ♪"}
+      ]
+    }
+  ]
+}
+```
+
+Parsed to: `[00:18] ♪ We're no strangers to love ♪`
+
+### VTT format (WebVTT)
+
+```
+WEBVTT
+
+00:00:18.000 --> 00:00:22.000
+♪ We're no strangers to love ♪
+```
+
+Parsed to: `[00:18] ♪ We're no strangers to love ♪`
+
+### XML format (YouTube's srv3)
+
+```xml
+<transcript>
+  <text start="18.0" dur="4.0">♪ We're no strangers to love ♪</text>
+</transcript>
+```
+
+Parsed to: `[00:18] ♪ We're no strangers to love ♪`
+
+All formats are normalized to the same timestamped text output.
+
+## Installing yt-dlp
+
+yt-dlp is an optional dependency for fast transcript extraction.
+
+### macOS
+
+```bash
+brew install yt-dlp
+```
+
+### Linux (Debian/Ubuntu)
+
+```bash
+sudo curl -L https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp -o /usr/local/bin/yt-dlp
+sudo chmod +x /usr/local/bin/yt-dlp
+```
+
+### Python (pip)
+
+```bash
+pip install yt-dlp
+```
+
+### Docker
+
+The Camofox Docker image includes yt-dlp by default (`Dockerfile:38-40`):
+
+```dockerfile
+RUN curl -L https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp -o /usr/local/bin/yt-dlp \
+    && chmod +x /usr/local/bin/yt-dlp
+```
+
+No additional setup needed.
+
+## Detection and logging
+
+Camofox detects yt-dlp at startup by checking common installation paths (`lib/youtube.js:88-98`):
+
+- `yt-dlp` (in PATH)
+- `/usr/local/bin/yt-dlp`
+- `/usr/bin/yt-dlp`
+
+If found:
+```json
+{"ts":"2026-02-28T10:00:00.000Z","level":"info","msg":"yt-dlp found","path":"yt-dlp"}
+```
+
+If not found:
+```json
+{"ts":"2026-02-28T10:00:00.000Z","level":"warn","msg":"yt-dlp not found — YouTube transcript endpoint will use browser fallback"}
+```
+
+## Performance
+
+| Method | Typical Duration | Browser Needed |
+|--------|------------------|----------------|
+| yt-dlp | 2-5 seconds | No |
+| Browser fallback | 10-20 seconds | Yes |
+
+yt-dlp is ~4x faster and more reliable.
+
+## Common issues
+
+### No captions available
+
+**Cause**: The video has no captions (neither manual nor auto-generated).
+
+**Fix**: Check the video on youtube.com. If the CC button is grayed out, no captions exist.
+
+### Browser fallback timeout
+
+**Cause**: Video has a long ad pre-roll, or page failed to load.
+
+**Fix**: Install yt-dlp to skip browser-based extraction.
+
+### Language not found
+
+**Cause**: Requested language is unavailable.
+
+**Fix**: Check available languages in the error response (`available_languages` field in browser fallback), or request `en` as fallback.
+
+### yt-dlp not detected
+
+**Cause**: Binary not in PATH or not executable.
+
+**Fix**: Install yt-dlp using the instructions above, or add its location to PATH.
+
+## Security considerations
+
+The YouTube transcript endpoint validates URLs to prevent SSRF attacks (`lib/youtube.js:32-57`):
+
+- Only `http://` and `https://` schemes allowed
+- Only `youtube.com`, `*.youtube.com`, and `youtu.be` hosts allowed
+- URL is normalized and parsed before passing to yt-dlp
+
+yt-dlp is executed with a minimal sanitized environment (`lib/youtube.js:21-29`) to prevent environment variable injection:
+
+```javascript
+const SAFE_ENV_KEYS = ['PATH', 'HOME', 'LANG', 'LC_ALL', 'LC_CTYPE', 'TMPDIR'];
+```
+
+All yt-dlp operations have a 30-second timeout.

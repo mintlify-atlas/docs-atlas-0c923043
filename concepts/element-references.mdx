@@ -1,0 +1,293 @@
+---
+title: Element references
+description: Stable element identifiers for reliable browser automation
+---
+
+Element references (refs) are stable identifiers like `e1`, `e2`, `e3` that Camofox automatically generates for interactive elements on a page. They enable reliable automation without brittle CSS selectors or XPath queries.
+
+## What are element refs?
+
+When you call the snapshot endpoint, Camofox analyzes the page's accessibility tree and assigns sequential refs to every interactive element:
+
+```bash
+GET /tabs/:tabId/snapshot?userId=user1
+```
+
+Response includes annotated elements:
+```yaml
+- heading "Products"
+- link "Home" [e1]
+- button "Sign In" [e2]
+- textbox "Search" [e3]
+- checkbox "Remember me" [e4]
+```
+
+Each `[eN]` is a stable reference you can use in click/type operations.
+
+## How refs work
+
+### Generation process
+
+1. **Snapshot extracts accessibility tree** using Playwright's `ariaSnapshot()` API
+2. **Filters interactive roles** (button, link, textbox, checkbox, radio, etc.)
+3. **Assigns sequential IDs** starting from `e1`
+4. **Stores mapping** in tab state: `refs: Map<refId, {role, name, nth}>`
+
+### Internal storage
+
+From server.js:172:
+```javascript
+// TabState = { page, refs: Map<refId, {role, name, nth}>, visitedUrls: Set, toolCalls: number }
+```
+
+Each ref maps to:
+- `role`: Element's ARIA role (button, link, textbox)
+- `name`: Accessible name (button text, link text, aria-label)
+- `nth`: Occurrence index for disambiguation (0-based)
+
+### Disambiguation with nth
+
+When multiple elements have the same role+name, Camofox uses `nth` to distinguish them:
+
+```javascript
+const seenCounts = new Map(); // "role:name" -> count
+for (const line of lines) {
+  const key = `${normalizedRole}:${normalizedName}`;
+  const nth = seenCounts.get(key) || 0;
+  seenCounts.set(key, nth + 1);
+  refs.set(refId, { role: normalizedRole, name: normalizedName, nth });
+}
+```
+
+This ensures `e1` always refers to the first "Submit" button, `e2` to the second, etc.
+
+## Using refs in automation
+
+### Click element
+
+```bash
+POST /tabs/:tabId/click
+{
+  "userId": "agent1",
+  "ref": "e2"
+}
+```
+
+### Type text
+
+```bash
+POST /tabs/:tabId/type
+{
+  "userId": "agent1",
+  "ref": "e3",
+  "text": "search query"
+}
+```
+
+### Fallback to CSS selectors
+
+If you need more control, use raw selectors:
+
+```bash
+POST /tabs/:tabId/click
+{
+  "userId": "agent1",
+  "selector": "button.primary-action"
+}
+```
+
+<Note>
+Refs are preferred over selectors because they:
+- Work across framework re-renders (React, Vue, Next.js)
+- Survive dynamic class name changes
+- Match how screen readers see the page
+</Note>
+
+## Ref lifecycle
+
+### When refs are generated
+
+- **After navigation**: `POST /tabs/:tabId/navigate` auto-generates refs
+- **After click**: `POST /tabs/:tabId/click` refreshes refs
+- **On snapshot**: `GET /tabs/:tabId/snapshot` rebuilds refs from current page state
+
+### When refs reset
+
+<Warning>
+Refs are **cleared on every navigation**. Always fetch a new snapshot after navigating to get fresh refs.
+</Warning>
+
+From server.js:939:
+```javascript
+await tabState.page.goto(targetUrl, { waitUntil: 'domcontentloaded', timeout: 30000 });
+tabState.visitedUrls.add(targetUrl);
+tabState.lastSnapshot = null;  // Clear cached snapshot
+tabState.refs = await buildRefs(tabState.page);  // Generate new refs
+```
+
+### Auto-refresh on stale state
+
+If you try to click a ref but the ref map is empty, Camofox auto-refreshes:
+
+```javascript
+if (!locator && tabState.refs.size === 0) {
+  log('info', 'auto-refreshing stale refs before click', { ref });
+  tabState.refs = await buildRefs(tabState.page);
+  locator = refToLocator(tabState.page, ref, tabState.refs);
+}
+```
+
+## Interactive roles
+
+### Included roles
+
+From server.js:53-56:
+```javascript
+const INTERACTIVE_ROLES = [
+  'button', 'link', 'textbox', 'checkbox', 'radio',
+  'menuitem', 'tab', 'searchbox', 'slider', 'spinbutton', 'switch'
+];
+```
+
+These are the ARIA roles that receive element refs.
+
+### Excluded roles
+
+<Warning>
+**combobox is intentionally excluded** to avoid triggering complex widgets like date pickers and dropdowns that can interfere with navigation.
+</Warning>
+
+From server.js:51-57 comments:
+```javascript
+// Interactive roles to include - exclude combobox to avoid opening complex widgets
+// (date pickers, dropdowns) that can interfere with navigation
+```
+
+### Skip patterns
+
+Elements matching these patterns are also excluded:
+
+```javascript
+const SKIP_PATTERNS = [
+  /date/i, /calendar/i, /picker/i, /datepicker/i
+];
+```
+
+## Real-world examples
+
+From AGENTS.md workflow:
+
+### Search Google
+
+```bash
+# 1. Navigate with macro
+POST /tabs/:tabId/navigate
+{"userId": "agent1", "macro": "@google_search", "query": "weather today"}
+
+# 2. Get snapshot
+GET /tabs/:tabId/snapshot?userId=agent1
+# Returns: textbox "Search" [e1], button "Google Search" [e2]
+
+# 3. Click first result
+POST /tabs/:tabId/click
+{"userId": "agent1", "ref": "e3"}  # First search result link
+```
+
+### Fill form
+
+```bash
+# 1. Get form snapshot
+GET /tabs/:tabId/snapshot?userId=agent1
+# Returns:
+# - textbox "Email" [e1]
+# - textbox "Password" [e2]
+# - checkbox "Remember me" [e3]
+# - button "Sign In" [e4]
+
+# 2. Fill email
+POST /tabs/:tabId/type
+{"userId": "agent1", "ref": "e1", "text": "user@example.com"}
+
+# 3. Fill password
+POST /tabs/:tabId/type
+{"userId": "agent1", "ref": "e2", "text": "password123"}
+
+# 4. Check remember me
+POST /tabs/:tabId/click
+{"userId": "agent1", "ref": "e3"}
+
+# 5. Submit
+POST /tabs/:tabId/click
+{"userId": "agent1", "ref": "e4"}
+```
+
+## Troubleshooting
+
+### "Unknown ref: e5"
+
+**Cause**: Ref doesn't exist or refs were reset by navigation.
+
+**Solution**: Call snapshot to get current refs:
+```bash
+GET /tabs/:tabId/snapshot?userId=user1
+```
+
+### "strict mode violation"
+
+**Cause**: Multiple elements matched without disambiguation.
+
+**Fix**: Camofox automatically uses `.nth()` to prevent this. If you see this error, it's a bug - report it.
+
+### Ref points to wrong element
+
+**Cause**: Page changed after snapshot (SPA re-render, lazy load).
+
+**Solution**: Refresh snapshot before interacting:
+```bash
+GET /tabs/:tabId/snapshot?userId=user1
+POST /tabs/:tabId/click {"userId": "user1", "ref": "e2"}
+```
+
+<Tip>
+For highly dynamic SPAs, call snapshot before each interaction to ensure refs are current.
+</Tip>
+
+## Performance
+
+### Ref generation timeout
+
+From server.js:184:
+```javascript
+const BUILDREFS_TIMEOUT_MS = 10000;  // 10 seconds max
+```
+
+If the page is extremely complex, buildRefs will timeout and return partial refs.
+
+### Max refs per page
+
+From server.js:177:
+```javascript
+const MAX_SNAPSHOT_NODES = 500;
+```
+
+Only the first 500 interactive elements receive refs. Pagination links are prioritized (see snapshot windowing).
+
+## Advanced: Ref-to-locator conversion
+
+From server.js:680-692:
+```javascript
+function refToLocator(page, ref, refs) {
+  const info = refs.get(ref);
+  if (!info) return null;
+  
+  const { role, name, nth } = info;
+  let locator = page.getByRole(role, name ? { name } : undefined);
+  
+  // Always use .nth() to disambiguate duplicate role+name combinations
+  locator = locator.nth(nth);
+  
+  return locator;
+}
+```
+
+This converts `e2` → Playwright locator using stored role/name/nth metadata.

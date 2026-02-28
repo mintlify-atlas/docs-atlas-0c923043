@@ -1,0 +1,279 @@
+---
+title: Server Management
+description: Health checks and browser engine control
+---
+
+Endpoints for monitoring server health and manually controlling the browser engine lifecycle.
+
+## Health check
+
+```
+GET /health
+```
+
+Returns the current server and browser state. This endpoint is **not logged** to reduce noise in production logs.
+
+### Response
+
+<ResponseField name="ok" type="boolean">
+  `true` if server is healthy, `false` if recovering from errors
+</ResponseField>
+
+<ResponseField name="engine" type="string">
+  Browser engine name: `"camoufox"`
+</ResponseField>
+
+<ResponseField name="browserConnected" type="boolean">
+  `true` if browser is currently running and connected
+</ResponseField>
+
+<ResponseField name="browserRunning" type="boolean">
+  `true` if browser process is active (same as `browserConnected`)
+</ResponseField>
+
+<ResponseField name="activeTabs" type="number">
+  Total number of open tabs across all sessions
+</ResponseField>
+
+<ResponseField name="consecutiveFailures" type="number">
+  Number of consecutive navigation failures. Browser auto-restarts after 3 failures.
+</ResponseField>
+
+<ResponseField name="recovering" type="boolean">
+  `true` if browser is currently restarting after detecting unhealthy state
+</ResponseField>
+
+### Health states
+
+| State | Condition | HTTP Status |
+|-------|-----------|-------------|
+| **Healthy** | `ok: true`, browser running | `200 OK` |
+| **Not started** | `ok: true`, `browserConnected: false` | `200 OK` |
+| **Recovering** | `recovering: true` | `503 Service Unavailable` |
+| **Unhealthy** | `consecutiveFailures >= 3` | `200 OK` (auto-restart triggered) |
+
+### Browser lifecycle
+
+- Browser launches **lazily** on first request (tab creation, navigation, etc.)
+- Browser shuts down after **5 minutes of inactivity** when no sessions exist (configurable via `BROWSER_IDLE_TIMEOUT_MS`)
+- Browser **auto-restarts** after 3 consecutive navigation failures
+
+### Examples
+
+**Healthy (browser running):**
+```bash
+curl http://localhost:9377/health
+```
+
+```json
+{
+  "ok": true,
+  "engine": "camoufox",
+  "browserConnected": true,
+  "browserRunning": true,
+  "activeTabs": 5,
+  "consecutiveFailures": 0
+}
+```
+
+**Healthy (browser idle):**
+```json
+{
+  "ok": true,
+  "engine": "camoufox",
+  "browserConnected": false,
+  "browserRunning": false,
+  "activeTabs": 0,
+  "consecutiveFailures": 0
+}
+```
+
+**Recovering from errors:**
+```bash
+curl http://localhost:9377/health
+# HTTP 503
+```
+
+```json
+{
+  "ok": false,
+  "engine": "camoufox",
+  "recovering": true
+}
+```
+
+## Start browser
+
+```
+POST /start
+```
+
+Manually launch the browser engine. Useful for pre-warming the browser before the first request.
+
+### Response
+
+<ResponseField name="ok" type="boolean">
+  `true` if browser started successfully
+</ResponseField>
+
+<ResponseField name="browserRunning" type="boolean">
+  `true` after successful launch
+</ResponseField>
+
+### Example
+
+```bash
+curl -X POST http://localhost:9377/start
+```
+
+```json
+{
+  "ok": true,
+  "browserRunning": true
+}
+```
+
+### Notes
+
+- If browser is already running, this endpoint is a no-op and returns success
+- First browser launch downloads Camoufox (~300MB) if not already installed
+- Subsequent launches take 2-5 seconds
+
+## Stop browser
+
+```
+POST /stop
+```
+
+Gracefully shut down the browser engine and close all sessions. **Requires authentication.**
+
+### Authentication
+
+<ParamField header="Authorization" type="string" required>
+  Bearer token matching the `CAMOFOX_ADMIN_KEY` environment variable:
+  ```
+  Authorization: Bearer YOUR_CAMOFOX_ADMIN_KEY
+  ```
+</ParamField>
+
+If `CAMOFOX_ADMIN_KEY` is not set, this endpoint returns `403 Forbidden`.
+
+### Response
+
+<ResponseField name="ok" type="boolean">
+  `true` if browser was stopped successfully
+</ResponseField>
+
+<ResponseField name="browserRunning" type="boolean">
+  `false` after shutdown
+</ResponseField>
+
+### Example
+
+```bash
+curl -X POST http://localhost:9377/stop \
+  -H 'Authorization: Bearer YOUR_CAMOFOX_ADMIN_KEY'
+```
+
+```json
+{
+  "ok": true,
+  "browserRunning": false
+}
+```
+
+### Shutdown sequence
+
+1. All user sessions are closed (browser contexts)
+2. All open tabs are closed
+3. Browser process is terminated
+4. Browser will relaunch on the next request
+
+### Error responses
+
+**Missing or invalid admin key:**
+```json
+{
+  "error": "Forbidden"
+}
+```
+
+**Admin key not configured:**
+```json
+{
+  "error": "Shutdown endpoint is disabled. Set CAMOFOX_ADMIN_KEY to enable."
+}
+```
+
+## Auto-recovery
+
+The server automatically monitors browser health and restarts when necessary:
+
+### Failure detection
+
+- Tracks consecutive navigation failures
+- After **3 consecutive failures**, browser is considered unhealthy
+- All sessions are closed and browser restarts
+- Success resets the failure counter
+
+### Disconnection handling
+
+- If browser disconnects unexpectedly, all sessions are cleared
+- Browser relaunches on the next request
+- Clients receive 500 errors during recovery
+
+### Idle shutdown
+
+- When **no sessions** exist for 5 minutes (default), browser shuts down to free memory
+- Server idle memory usage: ~40MB
+- Browser relaunches on the next tab creation
+
+### Configuration
+
+| Variable | Description | Default |
+|----------|-------------|--------|
+| `BROWSER_IDLE_TIMEOUT_MS` | Time before idle shutdown (0 = never) | `300000` (5 min) |
+| `SESSION_TIMEOUT_MS` | Session inactivity timeout | `1800000` (30 min) |
+| `HANDLER_TIMEOUT_MS` | Max time for navigation/interaction | `30000` (30s) |
+
+## Use cases
+
+### Health monitoring
+
+```bash
+# Kubernetes liveness probe
+livenessProbe:
+  httpGet:
+    path: /health
+    port: 9377
+  initialDelaySeconds: 10
+  periodSeconds: 30
+```
+
+### Pre-warming
+
+```bash
+# Launch browser before first user request
+curl -X POST http://localhost:9377/start
+```
+
+### Graceful shutdown
+
+```bash
+# Stop browser before server restart
+curl -X POST http://localhost:9377/stop \
+  -H 'Authorization: Bearer $CAMOFOX_ADMIN_KEY'
+```
+
+### Load balancer health checks
+
+```bash
+# Check if server can accept requests
+curl -f http://localhost:9377/health || exit 1
+```
+
+## See also
+
+- [Environment variables](/advanced/environment-variables)
+- [Session management](/api/sessions/cookies)
+- [Docker deployment](/guides/docker-deployment)

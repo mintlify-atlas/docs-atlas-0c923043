@@ -1,0 +1,180 @@
+---
+title: Get screenshot
+description: Capture a PNG screenshot of the current page
+---
+
+## Endpoint
+
+```
+GET /tabs/:tabId/screenshot
+```
+
+Captures a PNG screenshot of the current page viewport or full page.
+
+## Authentication
+
+No authentication required. All endpoints use `userId` for session isolation.
+
+## Path parameters
+
+<ParamField path="tabId" type="string" required>
+  The unique identifier of the tab
+</ParamField>
+
+## Query parameters
+
+<ParamField query="userId" type="string" required>
+  User identifier for session isolation
+</ParamField>
+
+<ParamField query="fullPage" type="boolean" default="false">
+  Whether to capture the entire scrollable page instead of just the viewport
+</ParamField>
+
+## Response
+
+Returns a binary PNG image with `Content-Type: image/png` header.
+
+## Screenshot behavior
+
+- **Viewport screenshot** (default): Captures only the visible area (1280x720 by default)
+- **Full page screenshot** (`fullPage=true`): Captures the entire scrollable page height
+- Format: PNG with transparency support
+- No artificial delays - captures current rendered state immediately
+- Does not scroll the page or change current viewport position
+
+## Size limits
+
+Full-page screenshots of very long pages can produce large files:
+
+- **Viewport screenshot**: ~100-500 KB (1280x720)
+- **Full page screenshot**: 1-10 MB depending on page height
+- Maximum practical height: ~50,000 pixels (taller pages may timeout or OOM)
+
+For extremely long pages, consider using viewport screenshots with `/scroll` instead.
+
+## Error codes
+
+- `400` - Missing required parameter (`userId`)
+- `404` - Tab not found
+- `500` - Screenshot capture failed (page closed, timeout)
+
+## Examples
+
+### Viewport screenshot
+
+```bash
+curl "http://localhost:9377/tabs/abc123/screenshot?userId=agent1" \
+  --output screenshot.png
+```
+
+### Full page screenshot
+
+```bash
+curl "http://localhost:9377/tabs/abc123/screenshot?userId=agent1&fullPage=true" \
+  --output fullpage.png
+```
+
+### Save with timestamp
+
+```bash
+TIMESTAMP=$(date +%s)
+curl "http://localhost:9377/tabs/abc123/screenshot?userId=agent1" \
+  --output "screenshot-${TIMESTAMP}.png"
+```
+
+### Get screenshot in base64 (for JSON workflows)
+
+Use the `/snapshot` endpoint with `includeScreenshot=true` instead:
+
+```bash
+curl "http://localhost:9377/tabs/abc123/snapshot?userId=agent1&includeScreenshot=true" | \
+  jq -r '.screenshot.data' | base64 -d > screenshot.png
+```
+
+## Use cases
+
+### Visual verification
+
+Capture screenshots before/after interactions to verify UI changes:
+
+```bash
+# Before clicking
+curl "http://localhost:9377/tabs/abc123/screenshot?userId=agent1" \
+  --output before.png
+
+# Click button
+curl -X POST http://localhost:9377/tabs/abc123/click \
+  -d '{"userId": "agent1", "ref": "e1"}'
+
+# After clicking
+curl "http://localhost:9377/tabs/abc123/screenshot?userId=agent1" \
+  --output after.png
+```
+
+### Debug automation failures
+
+When an interaction fails, capture a screenshot to see what went wrong:
+
+```bash
+# Try to click
+curl -X POST http://localhost:9377/tabs/abc123/click \
+  -d '{"userId": "agent1", "ref": "e99"}' || \
+  curl "http://localhost:9377/tabs/abc123/screenshot?userId=agent1" \
+    --output debug-$(date +%s).png
+```
+
+### Archive page state
+
+Capture full-page screenshots for archival:
+
+```bash
+curl "http://localhost:9377/tabs/abc123/screenshot?userId=agent1&fullPage=true" \
+  --output "archive-$(date +%Y%m%d-%H%M%S).png"
+```
+
+### Visual regression testing
+
+Compare screenshots across runs to detect unintended UI changes:
+
+```bash
+# Baseline
+curl "http://localhost:9377/tabs/abc123/screenshot?userId=agent1" \
+  --output baseline.png
+
+# Current
+curl "http://localhost:9377/tabs/abc123/screenshot?userId=agent1" \
+  --output current.png
+
+# Compare (requires imagemagick)
+compare baseline.png current.png diff.png
+```
+
+## Comparison with snapshot screenshot
+
+There are two ways to get screenshots:
+
+| Method | Format | Use case |
+|--------|--------|----------|
+| **GET /screenshot** | Binary PNG | Direct image download, external tools |
+| **GET /snapshot?includeScreenshot=true** | Base64 in JSON | Combined with accessibility tree, AI vision models |
+
+## Best practices
+
+1. **Prefer viewport screenshots**: Faster and smaller files
+2. **Wait for rendering**: Call `/snapshot` or wait 1-2s before screenshot for dynamic content
+3. **Handle large files**: Stream screenshots instead of loading into memory
+4. **Use descriptive filenames**: Include timestamp, tab ID, or test name
+5. **Check page loaded**: Verify page is fully rendered before capturing
+
+## Performance considerations
+
+- Viewport screenshots: ~100-200ms
+- Full-page screenshots: ~500-2000ms depending on page height
+- Screenshots do not block other operations on different tabs
+- Multiple concurrent screenshots on the same tab are serialized
+
+## Related endpoints
+
+- **GET /tabs/:tabId/snapshot** - Get accessibility tree with optional embedded screenshot (base64)
+- **POST /tabs/:tabId/wait** - Wait for page ready before capturing screenshot
