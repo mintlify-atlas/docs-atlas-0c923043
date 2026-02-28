@@ -75,7 +75,9 @@
               "api/interaction/snapshot",
               "api/interaction/click",
               "api/interaction/type",
+              "api/interaction/press",
               "api/interaction/scroll",
+              "api/interaction/wait",
               "api/interaction/navigation",
               "api/interaction/links",
               "api/interaction/screenshot"

@@ -1,0 +1,112 @@
+---
+title: Press key
+description: Press a keyboard key on the page
+---
+
+## Endpoint
+
+```
+POST /tabs/:id/press
+```
+
+Press a keyboard key (e.g., Enter, Tab, Escape, ArrowDown).
+
+## Authentication
+
+Requires `userId` in the request body to identify the session owner.
+
+## Parameters
+
+<ParamField path="id" type="string" required>
+  The tab ID returned from `POST /tabs`
+</ParamField>
+
+<ParamField body="userId" type="string" required>
+  The user ID that owns this tab's session
+</ParamField>
+
+<ParamField body="key" type="string" required>
+  The key to press. Supports all Playwright keyboard keys:
+  - Character keys: `"a"`, `"B"`, `"1"`, `"#"`
+  - Special keys: `"Enter"`, `"Tab"`, `"Escape"`, `"Backspace"`, `"Delete"`
+  - Arrow keys: `"ArrowUp"`, `"ArrowDown"`, `"ArrowLeft"`, `"ArrowRight"`
+  - Modifier keys: `"Shift"`, `"Control"`, `"Alt"`, `"Meta"`
+  - Function keys: `"F1"` through `"F12"`
+  - Navigation: `"Home"`, `"End"`, `"PageUp"`, `"PageDown"`
+</ParamField>
+
+## Response
+
+<ResponseField name="ok" type="boolean">
+  `true` if the key was pressed successfully
+</ResponseField>
+
+## Example
+
+```bash
+curl -X POST http://localhost:9377/tabs/abc123/press \
+  -H 'Content-Type: application/json' \
+  -d '{
+    "userId": "agent1",
+    "key": "Enter"
+  }'
+```
+
+**Response:**
+```json
+{
+  "ok": true
+}
+```
+
+## Common use cases
+
+### Submit a form
+```bash
+# Focus a submit button and press Enter
+curl -X POST http://localhost:9377/tabs/abc123/click \
+  -d '{"userId": "agent1", "ref": "e5"}'
+
+curl -X POST http://localhost:9377/tabs/abc123/press \
+  -d '{"userId": "agent1", "key": "Enter"}'
+```
+
+### Navigate with keyboard
+```bash
+# Press Tab to focus next element
+curl -X POST http://localhost:9377/tabs/abc123/press \
+  -d '{"userId": "agent1", "key": "Tab"}'
+
+# Press Escape to close a modal
+curl -X POST http://localhost:9377/tabs/abc123/press \
+  -d '{"userId": "agent1", "key": "Escape"}'
+```
+
+### Scroll with arrow keys
+```bash
+# Scroll down with ArrowDown
+curl -X POST http://localhost:9377/tabs/abc123/press \
+  -d '{"userId": "agent1", "key": "ArrowDown"}'
+```
+
+## Error responses
+
+| Status | Error | Cause |
+|--------|-------|-------|
+| 400 | `userId is required` | Missing `userId` in request body |
+| 400 | `key is required` | Missing `key` in request body |
+| 404 | `Tab not found` | Tab ID doesn't exist or doesn't belong to this user |
+| 500 | Internal server error | Playwright error, page closed, or timeout |
+
+## Notes
+
+- Key names are case-sensitive: use `"Enter"` not `"enter"`
+- Modifier keys can be combined with `+`: `"Control+c"`, `"Shift+Tab"`
+- Key press happens wherever focus currently is on the page
+- Use `/type` endpoint instead for typing text strings
+- For pressing Enter after typing, use the `pressEnter` parameter in `/type`
+
+## Related endpoints
+
+- [Type text](/api/interaction/type) - Type text into an element
+- [Click element](/api/interaction/click) - Click to focus an element first

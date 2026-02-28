@@ -1,0 +1,134 @@
+---
+title: Wait for page ready
+description: Wait for the page to finish loading and become interactive
+---
+
+## Endpoint
+
+```
+POST /tabs/:id/wait
+```
+
+Wait for the page to reach a ready state after navigation or dynamic content loading.
+
+## Authentication
+
+Requires `userId` in the request body to identify the session owner.
+
+## Parameters
+
+<ParamField path="id" type="string" required>
+  The tab ID returned from `POST /tabs`
+</ParamField>
+
+<ParamField body="userId" type="string" required>
+  The user ID that owns this tab's session
+</ParamField>
+
+<ParamField body="timeout" type="number" default="10000">
+  Maximum time to wait in milliseconds (default: 10000ms / 10 seconds)
+</ParamField>
+
+<ParamField body="waitForNetwork" type="boolean" default="true">
+  Whether to wait for network idle (no requests for 500ms). Set to `false` for faster returns on pages with continuous network activity.
+</ParamField>
+
+## Response
+
+<ResponseField name="ok" type="boolean">
+  `true` if the operation completed
+</ResponseField>
+
+<ResponseField name="ready" type="boolean">
+  `true` if the page became ready within the timeout, `false` if timeout was reached
+</ResponseField>
+
+## Example
+
+```bash
+curl -X POST http://localhost:9377/tabs/abc123/wait \
+  -H 'Content-Type: application/json' \
+  -d '{
+    "userId": "agent1",
+    "timeout": 15000,
+    "waitForNetwork": true
+  }'
+```
+
+**Response:**
+```json
+{
+  "ok": true,
+  "ready": true
+}
+```
+
+## When to use
+
+### After navigation
+Wait for a page to fully load after calling `/navigate`:
+
+```bash
+# Navigate to a page
+curl -X POST http://localhost:9377/tabs/abc123/navigate \
+  -d '{"userId": "agent1", "url": "https://example.com/slow-page"}'
+
+# Wait for it to finish loading
+curl -X POST http://localhost:9377/tabs/abc123/wait \
+  -d '{"userId": "agent1", "timeout": 20000}'
+```
+
+### After dynamic actions
+Wait for content to load after clicking a button that triggers an AJAX request:
+
+```bash
+# Click a "Load More" button
+curl -X POST http://localhost:9377/tabs/abc123/click \
+  -d '{"userId": "agent1", "ref": "e12"}'
+
+# Wait for new content to load
+curl -X POST http://localhost:9377/tabs/abc123/wait \
+  -d '{"userId": "agent1", "waitForNetwork": true}'
+```
+
+### Skip network wait for streaming content
+Some pages have continuous network activity (streaming, polling, live updates). Set `waitForNetwork: false` to return as soon as DOM is ready:
+
+```bash
+curl -X POST http://localhost:9377/tabs/abc123/wait \
+  -d '{
+    "userId": "agent1",
+    "waitForNetwork": false,
+    "timeout": 5000
+  }'
+```
+
+## Wait behavior
+
+The endpoint waits for:
+
+1. **DOM ready** - Document has finished parsing
+2. **Network idle** (if `waitForNetwork: true`) - No network requests for 500ms
+3. **Hydration** - JavaScript frameworks have initialized (best-effort detection)
+
+If the timeout is reached before all conditions are met, `ready: false` is returned but the operation still succeeds (`ok: true`).
+
+## Error responses
+
+| Status | Error | Cause |
+|--------|-------|-------|
+| 400 | `userId is required` | Missing `userId` in request body |
+| 404 | `Tab not found` | Tab ID doesn't exist or doesn't belong to this user |
+| 500 | Internal server error | Page closed or browser crash |
+
+## Notes
+
+- `/navigate` already waits for `domcontentloaded` by default, so you usually don't need `/wait` immediately after navigation
+- Use `/wait` when you need stricter ready guarantees (network idle + hydration)
+- `/wait` is non-blocking - if the page never becomes idle, it will return `ready: false` after timeout
+- Consider using a longer timeout (20-30s) for slow pages or poor network conditions
+
+## Related endpoints
+
+- [Navigate](/api/interaction/navigation) - Navigate to a URL (includes built-in DOM wait)
+- [Get snapshot](/api/interaction/snapshot) - Get page content (auto-refreshes refs if stale)
