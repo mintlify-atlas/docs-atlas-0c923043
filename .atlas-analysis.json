@@ -1,0 +1,140 @@
+{
+  "projectType": "api-service",
+  "projectName": "Camofox Browser",
+  "projectDescription": "Anti-detection headless browser automation server for AI agents, powered by Camoufox",
+  "theme": "aspen",
+  "primaryColor": "#FF6B35",
+  "lightColor": "#FFB088",
+  "darkColor": "#CC4420",
+  "navigation": {
+    "tabs": [
+      {
+        "tab": "Documentation",
+        "groups": [
+          {
+            "group": "Get Started",
+            "pages": [
+              "introduction",
+              "quickstart",
+              "installation"
+            ]
+          },
+          {
+            "group": "Core Concepts",
+            "pages": [
+              "concepts/element-references",
+              "concepts/session-management",
+              "concepts/search-macros"
+            ]
+          },
+          {
+            "group": "Guides",
+            "pages": [
+              "guides/cookie-import",
+              "guides/proxy-geoip",
+              "guides/youtube-transcripts",
+              "guides/docker-deployment"
+            ]
+          },
+          {
+            "group": "Advanced",
+            "pages": [
+              "advanced/environment-variables",
+              "advanced/architecture"
+            ]
+          }
+        ]
+      },
+      {
+        "tab": "API Reference",
+        "groups": [
+          {
+            "group": "Tab Management",
+            "pages": [
+              "api/tabs/create",
+              "api/tabs/list",
+              "api/tabs/stats",
+              "api/tabs/close"
+            ]
+          },
+          {
+            "group": "Page Interaction",
+            "pages": [
+              "api/interaction/snapshot",
+              "api/interaction/click",
+              "api/interaction/type",
+              "api/interaction/scroll",
+              "api/interaction/navigation",
+              "api/interaction/links",
+              "api/interaction/screenshot"
+            ]
+          },
+          {
+            "group": "YouTube",
+            "pages": [
+              "api/youtube/transcript"
+            ]
+          },
+          {
+            "group": "Sessions",
+            "pages": [
+              "api/sessions/cookies"
+            ]
+          },
+          {
+            "group": "Server",
+            "pages": [
+              "api/server/health"
+            ]
+          }
+        ]
+      },
+      {
+        "tab": "Integration",
+        "groups": [
+          {
+            "group": "Usage",
+            "pages": [
+              "integration/openclaw-plugin",
+              "integration/standalone"
+            ]
+          }
+        ]
+      }
+    ]
+  },
+  "keyFeatures": [
+    "C++ anti-detection bypasses Google, Cloudflare, and bot detection",
+    "Stable element refs (e1, e2, e3) for reliable interaction",
+    "Token-efficient accessibility snapshots (~90% smaller than HTML)",
+    "Session isolation with per-user cookies and storage",
+    "Cookie import for authenticated browsing",
+    "Proxy routing with automatic GeoIP locale/timezone",
+    "YouTube transcript extraction via yt-dlp",
+    "14 search macros for common sites",
+    "Lazy browser launch with 40MB idle memory footprint"
+  ],
+  "publicApiSurface": [
+    "POST /tabs - Create browser tab",
+    "GET /tabs/:id/snapshot - Get accessibility tree with element refs",
+    "POST /tabs/:id/click - Click element by ref or selector",
+    "POST /tabs/:id/type - Type text into element",
+    "POST /tabs/:id/navigate - Navigate to URL or search macro",
+    "POST /tabs/:id/scroll - Scroll page",
+    "GET /tabs/:id/links - Extract all page links",
+    "GET /tabs/:id/screenshot - Capture screenshot",
+    "POST /tabs/:id/back - Browser back",
+    "POST /tabs/:id/forward - Browser forward",
+    "POST /tabs/:id/refresh - Refresh page",
+    "DELETE /tabs/:id - Close tab",
+    "GET /tabs - List open tabs",
+    "GET /tabs/:id/stats - Get tab statistics",
+    "DELETE /tabs/group/:groupId - Close tab group",
+    "POST /youtube/transcript - Extract YouTube captions",
+    "POST /sessions/:userId/cookies - Import cookies",
+    "DELETE /sessions/:userId - Delete user session",
+    "GET /health - Health check",
+    "POST /start - Start browser engine",
+    "POST /stop - Stop browser engine"
+  ]
+}
